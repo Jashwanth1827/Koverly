@@ -1,0 +1,279 @@
+"""Document vault, upload validation, and processing pipeline tests."""
+
+from __future__ import annotations
+
+from tests.conftest import (
+    auth_headers,
+    create_family,
+    create_policy,
+    make_pdf_bytes,
+    register,
+)
+
+SAMPLE_POLICY_TEXT = """Health Insurance Policy
+Policy Number: HLT-778899
+Insurer: Acme Health Insurance
+Policy Holder: Jane Doe
+Sum Insured: 500000
+Premium: 12500
+Premium Frequency: Yearly
+Start Date: 01/04/2024
+Expiry Date: 31/03/2025
+Nominee: John Doe
+TPA: MedAssist TPA
+Waiting Period: 24 months
+Deductible: 5000
+"""
+
+
+def _setup(client):
+    user = register(client, "doc_user@example.com", "Doc User")
+    family = create_family(client, user["access_token"])
+    return user, family
+
+
+def _upload(client, token, family_id, text, name="policy.pdf", **params):
+    pdf = make_pdf_bytes(text)
+    return client.post(
+        f"/api/v1/families/{family_id}/documents",
+        files={"file": (name, pdf, "application/pdf")},
+        headers=auth_headers(token),
+        params=params,
+    )
+
+
+def test_upload_rejects_non_pdf_masquerade(client):
+    user, family = _setup(client)
+    # Declared as PDF but content is not a PDF.
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("fake.pdf", b"just some text", "application/pdf")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 422
+
+
+def test_upload_rejects_oversized_file(client):
+    user, family = _setup(client)
+    # MAX_UPLOAD_BYTES is 5MB in tests; send 6MB.
+    big = b"%PDF-1.4\n" + b"0" * (6 * 1024 * 1024)
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("big.pdf", big, "application/pdf")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 422
+
+
+def test_upload_rejects_duplicate(client):
+    user, family = _setup(client)
+    first = _upload(client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT)
+    assert first.status_code == 201
+    second = _upload(client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT)
+    assert second.status_code == 422
+
+
+def test_upload_and_process_pipeline(client):
+    user, family = _setup(client)
+    resp = _upload(client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT)
+    assert resp.status_code == 201, resp.text
+    doc = resp.json()
+    assert doc["status"] in {"uploaded", "processing", "processed"}
+
+    # BackgroundTasks run synchronously in TestClient; fetch the final state.
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert detail["status"] == "processed", detail
+    assert detail["page_count"] == 1
+
+
+def test_extraction_produces_fields_with_provenance(client):
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+    resp = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200
+    fields = {f["field_name"]: f for f in resp.json()}
+
+    assert fields["policy_number"]["found"] is True
+    assert fields["policy_number"]["value"] == "HLT-778899"
+    assert fields["policy_number"]["source_page"] == 1
+    assert fields["insurer"]["value"].startswith("Acme Health")
+    assert fields["nominee"]["value"] == "John Doe"
+    assert fields["waiting_period"]["value"] == "24 months"
+
+    # A field genuinely absent must be marked not found — never invented.
+    assert fields["maturity_date"]["found"] is False
+    assert fields["maturity_date"]["value"] is None
+
+
+def test_confirm_extraction_applies_to_policy(client):
+    user, family = _setup(client)
+    policy = create_policy(
+        client, user["access_token"], family["id"], policy_number="PLACEHOLDER"
+    )
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT,
+        policy_id=policy["id"],
+    ).json()
+
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
+        json={
+            "policy_id": policy["id"],
+            "confirm": {"policy_number": "HLT-778899", "nominee": "John Doe"},
+            "reject": ["maturity_date"],
+        },
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+
+    updated = client.get(
+        f"/api/v1/families/{family['id']}/policies/{policy['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert updated["policy_number"] == "HLT-778899"
+    assert updated["nominee"] == "John Doe"
+
+
+def test_confirm_extraction_applies_typed_fields(client):
+    """Extracted money and dates must land in their real policy columns.
+
+    Regression: these fields were previously written into metadata_json as raw
+    strings, so confirming them left the policy's numeric/date columns empty.
+    """
+    user, family = _setup(client)
+    policy = create_policy(
+        client, user["access_token"], family["id"], policy_number="PLACEHOLDER"
+    )
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT,
+        policy_id=policy["id"],
+    ).json()
+
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
+        json={
+            "policy_id": policy["id"],
+            "confirm": {
+                "insurer": "Acme Health Insurance",
+                "sum_insured": "500000",
+                "premium": "12500",
+                "start_date": "01/04/2024",
+                "expiry_date": "31/03/2025",
+            },
+            "reject": [],
+        },
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+
+    updated = client.get(
+        f"/api/v1/families/{family['id']}/policies/{policy['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert updated["insurer"] == "Acme Health Insurance"
+    assert float(updated["sum_insured"]) == 500000
+    assert float(updated["premium"]) == 12500
+    assert updated["start_date"] == "2024-04-01"
+    assert updated["expiry_date"] == "2025-03-31"
+
+
+def test_confirm_extraction_preserves_unparseable_values(client):
+    """A value that cannot be coerced must not be silently dropped."""
+    user, family = _setup(client)
+    policy = create_policy(
+        client, user["access_token"], family["id"], policy_number="PLACEHOLDER",
+        sum_insured=None, premium=None,
+    )
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT,
+        policy_id=policy["id"],
+    ).json()
+
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
+        json={
+            "policy_id": policy["id"],
+            "confirm": {"sum_insured": "as per schedule", "expiry_date": "not a date"},
+            "reject": [],
+        },
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+
+    updated = client.get(
+        f"/api/v1/families/{family['id']}/policies/{policy['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert updated["sum_insured"] is None
+    assert updated["expiry_date"] is None
+    # The raw text is retained in metadata rather than discarded.
+    assert updated["metadata_json"]["sum_insured"] == "as per schedule"
+    assert updated["metadata_json"]["expiry_date"] == "not a date"
+
+
+def test_confirm_requires_policy_link(client):
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
+        json={"confirm": {"policy_number": "X"}, "reject": []},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 422
+
+
+def test_document_download_requires_auth(client):
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+    resp = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/download"
+    )
+    assert resp.status_code == 401
+
+
+def test_document_delete_removes_file(client):
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+    resp = client.delete(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}",
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200
+    assert client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).status_code == 404
+
+
+def test_image_upload_fails_processing_with_clear_reason(client):
+    """OCR is not configured, so images must fail explicitly — never fabricate."""
+    user, family = _setup(client)
+    # Minimal valid PNG header.
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("scan.png", png, "image/png")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 201
+    doc_id = resp.json()["id"]
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc_id}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert detail["status"] == "failed"
+    assert "OCR" in (detail["processing_error"] or "")

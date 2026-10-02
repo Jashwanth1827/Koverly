@@ -1,0 +1,173 @@
+# Koverly
+
+**Understand, manage, and use every insurance policy your family owns.**
+
+Koverly is an Insurance Operating System for individuals and families. It helps you discover
+what insurance you actually have, organize every policy in one place, understand complicated
+documents, track renewals and premiums, manage family members, track claims, and reach the right
+information in an emergency.
+
+> Koverly is an organizational and informational tool. It is not an insurer, lawyer, doctor, or
+> financial adviser, and it never guarantees a claim outcome.
+
+---
+
+## What it does
+
+| Module | Purpose |
+| --- | --- |
+| Dashboard | Family protection overview: active policies, annual premium, life/health cover, renewals, actions, recent claims. |
+| Family | One family group with members (self, spouse, parents, children, siblings) and roles (owner, admin, member, viewer). |
+| Policies | Life, health, motor, home, travel, personal accident, and other policies with extensible metadata. |
+| Documents | Private policy document vault (PDF/JPG/PNG) with upload, view, download, delete, and processing status. |
+| AI extraction | Text extraction, classification, and structured field extraction with confidence and source pages. Fields you review are the only ones applied. |
+| Ask InsuraOS | Grounded Q&A over your own policies, family, claims, and documents, with source references. |
+| Insurance Intelligence | Expiring policies, missing information, and *potential* overlaps — never stated as advice. |
+| Claims | Claim records with statuses, a timeline, and claim documents. |
+| Emergency mode | Fast, readable summary of relevant cover, TPA, helpline, and claim steps, plus a scoped temporary share link. |
+| Calendar | Renewals, premiums, claims, and document dates aggregated from real data. |
+| Search | Authorized global search across policies, members, claims, and documents. |
+| Audit log | Actor, action, resource, timestamp for sensitive operations. No raw document contents. |
+
+## Product principles
+
+- **No fake functionality.** Every value in the UI comes from the database. Integrations that are
+  not configured report their real state (for example, `AI provider: null`).
+- **AI never invents.** If a field is absent from a document, it is reported as *not found in
+  uploaded document* — never guessed.
+- **AI is reviewed.** Extracted fields are *proposed* until you confirm, edit, or reject them.
+- **Tenant isolation.** A user can never access another user's policies, claims, documents, or
+  vector chunks.
+
+---
+
+## Architecture
+
+```
+frontend/  Next-generation SPA — React + TypeScript + Vite + Tailwind
+backend/   FastAPI — Python 3.13, SQLAlchemy async, Pydantic v2
+```
+
+### Backend layout
+
+```
+app/
+  api/v1/        Versioned routers (auth, families, policies, documents, claims,
+                 insights, reminders, emergency, search, dashboard, config)
+  core/          config, security, errors, logging, rate limiting
+  db/            async engine/session
+  models/        SQLAlchemy models (user, family, policy, document, claim, ...)
+  schemas/       Pydantic request/response models
+  services/      business logic (policy, document, extraction, retrieval,
+                 assistant, intelligence, claims, reminders, audit)
+  ai/            provider abstraction: base, factory, null_provider, openai_provider
+  integrations/  storage (local/S3) and notifications (noop/webhook)
+```
+
+### Key design choices
+
+- **AI provider abstraction** — `AIProvider` with `extract_policy`, `answer_policy_question`,
+  `summarize_document`, and `analyze_coverage`. `null` is a deterministic local provider that
+  performs no external calls and fabricates nothing. `openai` targets any OpenAI-compatible
+  endpoint. Swapping providers is configuration, not code.
+- **Private storage with signed URLs** — documents are never served publicly; access goes through
+  short-lived signed URLs.
+- **Retrieval with tenant isolation** — document chunks are always filtered by `user_id`/`family_id`
+  before they reach the model.
+- **Prompt-injection defense** — uploaded documents are treated as untrusted text and are clearly
+  separated from system instructions and the user question.
+- **Asynchronous processing** — uploads return immediately; extraction and indexing run in the
+  background and update document status.
+
+---
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.13 (3.11+ supported) with [uv](https://docs.astral.sh/uv/) or pip
+- Node.js 24 (18+ supported)
+- Optional: Docker + Docker Compose
+
+### Backend
+
+```bash
+cd backend
+cp .env.example .env
+# Set SECRET_KEY (generate with: python -c "import secrets;print(secrets.token_urlsafe(48))")
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"   # or: pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8000
+```
+
+API docs (development only): <http://localhost:8000/api/docs>
+
+### Frontend
+
+```bash
+cd frontend
+cp .env.example .env
+npm install
+npm run dev          # http://localhost:5173, proxies /api to the backend
+```
+
+### Tests
+
+```bash
+cd backend
+pytest -q
+```
+
+### Docker
+
+```bash
+export SECRET_KEY="$(python -c 'import secrets;print(secrets.token_urlsafe(48))')"
+docker compose up --build
+# Frontend: http://localhost:8080   Backend: http://localhost:8000
+```
+
+---
+
+## Configuration
+
+All secrets come from environment variables — nothing sensitive is committed. See
+`backend/.env.example` and `frontend/.env.example`. Highlights:
+
+| Variable | Purpose |
+| --- | --- |
+| `SECRET_KEY` | JWT signing key. **Required in production.** |
+| `DATABASE_URL` | SQLite by default; PostgreSQL via `postgresql+asyncpg://…` in production. |
+| `STORAGE_BACKEND` | `local` or `s3`. |
+| `SIGNED_URL_TTL_SECONDS` | Lifetime of document access URLs. |
+| `AI_PROVIDER` | `null` (default, offline, no fabrication) or `openai`. |
+| `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | External model credentials and endpoint. |
+| `NOTIFICATION_BACKEND` | `noop` or `webhook`. |
+| `CORS_ORIGINS` | Allowed browser origins. |
+| `RATE_LIMIT_PER_MINUTE` | Per-client request budget. |
+
+---
+
+## Security
+
+- JWT authentication with Argon2 password hashing.
+- Role-based authorization per family (owner / admin / member / viewer), enforced on every
+  resource access.
+- Private document storage with short-lived signed URLs; no public buckets.
+- Upload validation on content type and size.
+- Structured error responses that never leak stack traces.
+- Audit logging for sensitive actions, with no raw document contents recorded.
+- Security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`).
+- Tenant-scoped retrieval so the assistant can never read another user's data.
+- Prompt-injection defenses around untrusted document text.
+
+## Known limitations
+
+- Local and test environments create tables via `init_models`; production should use Alembic
+  migrations (a migration toolchain is intentionally not added yet to avoid premature dependencies).
+- Billing records a plan preference only; no payment processor is connected.
+- Email/WhatsApp ingestion and insurer integrations are extension points, not implemented.
+
+## Roadmap (extension points)
+
+Email ingestion, WhatsApp notifications, OCR providers, insurer integrations, employer benefits,
+advisor portal, B2B accounts, analytics, and multilingual support.

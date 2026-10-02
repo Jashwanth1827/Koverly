@@ -1,0 +1,49 @@
+# Koverly — local Docker Compose stack.
+# Copy backend/.env.example to backend/.env and set a strong SECRET_KEY first.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: koverly
+      POSTGRES_PASSWORD: koverly
+      POSTGRES_DB: koverly
+    volumes:
+      - koverly-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U koverly"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ENV: production
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in your environment}
+      DATABASE_URL: postgresql+asyncpg://koverly:koverly@db:5432/koverly
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_ROOT: /app/storage
+      AI_PROVIDER: ${AI_PROVIDER:-null}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+      NOTIFICATION_BACKEND: ${NOTIFICATION_BACKEND:-noop}
+      CORS_ORIGINS: http://localhost:8080
+    volumes:
+      - koverly-storage:/app/storage
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  koverly-db:
+  koverly-storage:
