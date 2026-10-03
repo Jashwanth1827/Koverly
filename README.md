@@ -126,6 +126,39 @@ docker compose up --build
 # Frontend: http://localhost:8080   Backend: http://localhost:8000
 ```
 
+### Deploy to Render
+
+A Render Blueprint (`render.yaml`) is included. It provisions a Postgres database and a single
+web service that builds the combined production image (`deploy/render/Dockerfile`): nginx serves
+the SPA and proxies `/api` to FastAPI on the same origin (required because document signed URLs
+are relative paths).
+
+**One-click:** Render Dashboard → **New → Blueprint** → select this repository → **Apply**.
+Render wires `DATABASE_URL` from the database, generates `SECRET_KEY`, and deploys.
+
+**Or with the Render CLI:**
+
+```bash
+render blueprint launch          # create the service + database from render.yaml
+```
+
+Build and run the exact production image locally:
+
+```bash
+docker build -f deploy/render/Dockerfile -t koverly .
+docker run -p 8080:8080 -e SECRET_KEY=dev-secret -e DATABASE_URL="sqlite+aiosqlite:////tmp/k.db" koverly
+# http://localhost:8080  (health: /health)
+```
+
+Notes:
+
+- The container binds nginx to the platform-provided `$PORT`; the API runs internally on `:8000`.
+- `postgres://` / `postgresql://` URLs from Render are rewritten to `postgresql+asyncpg://`.
+- `CORS_ORIGINS` defaults to `RENDER_EXTERNAL_URL` when set.
+- Local storage (`STORAGE_LOCAL_ROOT`) is used by default. Render's disk is ephemeral on the free
+  plan — attach a persistent disk at `/app/storage`, or configure S3, for durable documents.
+- Tables are created on startup (`init_models`). For production, migrate to Alembic.
+
 ---
 
 ## Configuration
