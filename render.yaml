@@ -1,0 +1,46 @@
+# Koverly on Render — Infrastructure as Code.
+#
+# One-click: Render Dashboard → New → Blueprint → select this repo.
+# Render reads this file, creates the Postgres database and the web service,
+# wires DATABASE_URL automatically, and generates a SECRET_KEY.
+#
+# The web service builds the combined image (deploy/render/Dockerfile): nginx
+# serves the SPA and proxies /api to the FastAPI app on the same origin.
+
+databases:
+  - name: koverly-db
+    databaseName: koverly
+    user: koverly
+    plan: free
+    region: oregon
+
+services:
+  - type: web
+    name: koverly
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./deploy/render/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: koverly-db
+          property: connectionString
+      - key: STORAGE_BACKEND
+        value: local
+      - key: STORAGE_LOCAL_ROOT
+        value: /app/storage
+      # Deterministic offline provider: extracts and answers from your own data
+      # without external calls and never fabricates values. Set AI_PROVIDER=openai
+      # (plus AI_API_KEY / AI_BASE_URL / AI_MODEL) to enable an external model.
+      - key: AI_PROVIDER
+        value: null
+      - key: NOTIFICATION_BACKEND
+        value: noop
