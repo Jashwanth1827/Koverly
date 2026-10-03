@@ -24,6 +24,17 @@ services:
     dockerContext: .
     healthCheckPath: /health
     autoDeploy: true
+
+    # Durable document storage. Render disks require a paid instance type, so
+    # this is off by default to keep the free-plan deploy one-click. To persist
+    # uploaded documents across deploys, set `plan: starter` (or higher) above,
+    # uncomment the block below, and confirm STORAGE_LOCAL_ROOT is /app/storage.
+    # Without a disk, documents live on the container's ephemeral filesystem.
+    # disk:
+    #   name: koverly-storage
+    #   mountPath: /app/storage
+    #   sizeGB: 1
+
     envVars:
       - key: ENV
         value: production
