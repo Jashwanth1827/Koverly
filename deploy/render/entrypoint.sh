@@ -36,12 +36,18 @@ mkdir -p "${STORAGE_LOCAL_ROOT:-/app/storage}"
 
 # Run the API as the unprivileged user when possible; nginx's master process
 # keeps the privileges it needs to bind the port and write its pid file.
+APP_HOME=/home/koverly
 RUN_AS=()
 if command -v setpriv >/dev/null 2>&1 && id koverly >/dev/null 2>&1; then
   RUN_AS=(setpriv --reuid=koverly --regid=koverly --init-groups)
+  mkdir -p "$APP_HOME" 2>/dev/null || true
+  chown -R koverly:koverly "$APP_HOME" 2>/dev/null || true
 fi
 
-"${RUN_AS[@]}" uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+# HOME must point at a directory the app user can read: asyncpg probes
+# ~/.postgresql for client certificates and raises a permission error when HOME
+# is inherited as /root after privileges are dropped.
+"${RUN_AS[@]}" env HOME="$APP_HOME" uvicorn app.main:app --host 127.0.0.1 --port 8000 &
 API_PID=$!
 
 nginx -g 'daemon off;' &
