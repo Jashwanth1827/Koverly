@@ -8,7 +8,14 @@ from app.models.claim import (
     Reminder,
     Subscription,
 )
-from app.models.document import Document, DocumentChunk, PolicyExtraction
+from app.models.document import (
+    Document,
+    DocumentAnalysis,
+    DocumentChunk,
+    PolicyCandidateField,
+    PolicyCandidateRecord,
+    PolicyExtraction,
+)
 from app.models.enums import (
     AuditAction,
     ClaimStatus,
@@ -37,6 +44,7 @@ __all__ = [
     "ClaimEvent",
     "ClaimStatus",
     "Document",
+    "DocumentAnalysis",
     "DocumentChunk",
     "DocumentStatus",
     "DocumentType",
@@ -46,6 +54,8 @@ __all__ = [
     "FamilyMember",
     "FamilyRole",
     "Policy",
+    "PolicyCandidateField",
+    "PolicyCandidateRecord",
     "PolicyExtraction",
     "PolicyStatus",
     "PolicyType",

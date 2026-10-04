@@ -47,12 +47,17 @@ def _upload(client, token, family_id, text, name="policy.pdf", **params):
     )
 
 
-def test_upload_rejects_non_pdf_masquerade(client):
+def test_upload_rejects_unsupported_binary(client):
+    """A file whose real content type is unsupported is rejected outright.
+
+    The declared type is irrelevant: detection is from the file's bytes.
+    """
     user, family = _setup(client)
-    # Declared as PDF but content is not a PDF.
+    # Declared as a PDF but the bytes are an unsupported binary blob.
+    binary = b"\x7fELF\x02\x01\x01\x00" + bytes(range(256))
     resp = client.post(
         f"/api/v1/families/{family['id']}/documents",
-        files={"file": ("fake.pdf", b"just some text", "application/pdf")},
+        files={"file": ("fake.pdf", binary, "application/pdf")},
         headers=auth_headers(user["access_token"]),
     )
     assert resp.status_code == 422
@@ -504,12 +509,16 @@ def test_extraction_handles_hdfc_style_letter(client):
 
 
 def test_classifies_hdfc_style_letter_as_health():
-    """The insurer type is inferred from the document text itself."""
+    """The insurance category is inferred from the document text itself."""
     import asyncio
 
     from app.ai.null_provider import NullProvider
 
-    assert asyncio.run(NullProvider().classify_document(HDFC_STYLE_POLICY_TEXT)) == "health"
+    provider = NullProvider()
+    # The coarse hint drives the legacy pipeline; the category drives the new
+    # automatic classification. Both must be derived, never requested.
+    assert asyncio.run(provider.classify_document(HDFC_STYLE_POLICY_TEXT)) == "policy"
+    assert provider.classify_category(HDFC_STYLE_POLICY_TEXT)[0] == "health"
 
 
 # An OCR'd schedule page: labels run together across lines, and a relationship

@@ -26,13 +26,23 @@ from app.integrations.storage import content_disposition, get_storage
 from app.models.enums import DocumentType, FamilyRole
 from app.schemas.common import Message, Page
 from app.schemas.document import (
+    AnalysisDetailOut,
+    AnalysisOut,
+    CandidateConfirm,
+    CandidateFieldOut,
+    CandidateOut,
     DocumentOut,
     DocumentUpdate,
     ExtractionConfirm,
     ExtractionOut,
     SignedUrlOut,
 )
-from app.services import document_service, extraction_service, processing_service
+from app.services import (
+    candidate_service,
+    document_service,
+    extraction_service,
+    processing_service,
+)
 
 logger = logging.getLogger("koverly.documents.api")
 
@@ -266,3 +276,100 @@ async def confirm_extractions(
         actor=ctx.user,
     )
     return [ExtractionOut.model_validate(r) for r in rows]
+
+
+def _candidate_out(
+    candidate, fields: list
+) -> CandidateOut:
+    """Serialize a candidate with its fields.
+
+    Built explicitly rather than via ``from_attributes`` so the async session
+    never attempts a lazy relationship load.
+    """
+    return CandidateOut(
+        id=candidate.id,
+        document_id=candidate.document_id,
+        candidate_index=candidate.candidate_index,
+        document_class=candidate.document_class,
+        category=candidate.category,
+        category_confidence=candidate.category_confidence,
+        policy_type=candidate.policy_type,
+        policy_type_confidence=candidate.policy_type_confidence,
+        policy_subtype=candidate.policy_subtype,
+        policy_subtype_confidence=candidate.policy_subtype_confidence,
+        page_start=candidate.page_start,
+        page_end=candidate.page_end,
+        category_data=candidate.category_data or {},
+        status=candidate.status,
+        policy_id=candidate.policy_id,
+        fields=[CandidateFieldOut.model_validate(f) for f in fields],
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Document analysis & policy candidates (automatic understanding)
+# --------------------------------------------------------------------------- #
+@router.get(
+    "/families/{family_id}/documents/{document_id}/analysis",
+    response_model=AnalysisDetailOut,
+)
+async def get_analysis(
+    document_id: str, ctx: FamilyCtx, db: DbSession
+) -> AnalysisDetailOut:
+    """What Koverly understood from this document, plus its policy candidates."""
+    analysis, candidates = await candidate_service.get_analysis(
+        db, ctx.family_id, document_id
+    )
+    out: list[CandidateOut] = []
+    for candidate in candidates:
+        fields = await candidate_service.get_candidate_fields(db, candidate.id)
+        out.append(_candidate_out(candidate, fields))
+    return AnalysisDetailOut(
+        analysis=AnalysisOut.model_validate(analysis),
+        candidates=out,
+        candidate_count=len(out),
+    )
+
+
+@router.post(
+    "/families/{family_id}/documents/{document_id}/candidates/{candidate_id}/confirm",
+    response_model=CandidateOut,
+)
+async def confirm_candidate(
+    document_id: str,
+    candidate_id: str,
+    payload: CandidateConfirm,
+    ctx: WriterCtx,
+    db: DbSession,
+) -> CandidateOut:
+    candidate, _policy = await candidate_service.confirm_candidate(
+        db,
+        family_id=ctx.family_id,
+        document_id=document_id,
+        candidate_id=candidate_id,
+        payload=payload,
+        actor=ctx.user,
+    )
+    fields = await candidate_service.get_candidate_fields(db, candidate.id)
+    return _candidate_out(candidate, fields)
+
+
+@router.post(
+    "/families/{family_id}/documents/{document_id}/candidates/{candidate_id}/reject",
+    response_model=CandidateOut,
+)
+async def reject_candidate(
+    document_id: str,
+    candidate_id: str,
+    ctx: WriterCtx,
+    db: DbSession,
+) -> CandidateOut:
+    candidate = await candidate_service.reject_candidate(
+        db,
+        family_id=ctx.family_id,
+        document_id=document_id,
+        candidate_id=candidate_id,
+        actor=ctx.user,
+    )
+    fields = await candidate_service.get_candidate_fields(db, candidate.id)
+    return _candidate_out(candidate, fields)

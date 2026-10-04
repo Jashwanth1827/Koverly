@@ -93,6 +93,22 @@ export const documentApi = {
     api.post<Document>(`/families/${familyId}/documents/${id}/reprocess`),
   extractions: (familyId: string, id: string) =>
     api.get<Extraction[]>(`/families/${familyId}/documents/${id}/extractions`),
+  analysis: (familyId: string, id: string) =>
+    api.get<import("./types").AnalysisDetail>(`/families/${familyId}/documents/${id}/analysis`),
+  confirmCandidate: (
+    familyId: string,
+    documentId: string,
+    candidateId: string,
+    body: { policy_id?: string; member_id?: string; category?: string; confirm: Record<string, string>; reject: string[] },
+  ) =>
+    api.post<import("./types").PolicyCandidate>(
+      `/families/${familyId}/documents/${documentId}/candidates/${candidateId}/confirm`,
+      body,
+    ),
+  rejectCandidate: (familyId: string, documentId: string, candidateId: string) =>
+    api.post<import("./types").PolicyCandidate>(
+      `/families/${familyId}/documents/${documentId}/candidates/${candidateId}/reject`,
+    ),
   confirm: (
     familyId: string,
     id: string,

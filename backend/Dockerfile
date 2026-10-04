@@ -33,7 +33,8 @@ RUN pip install --no-cache-dir \
     "numpy>=1.26.0" \
     "pytesseract>=0.3.10" \
     "pdf2image>=1.17.0" \
-    "Pillow>=10.0.0"
+    "Pillow>=10.0.0" \
+    "striprtf>=0.0.26"
 
 COPY app ./app
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import os
 import re
 import time
@@ -233,7 +234,7 @@ def sha256_hex(data: bytes) -> str:
 
 
 def sniff_content_type(data: bytes, declared: str) -> str | None:
-    """Validate magic bytes against the declared content type.
+    """Detect the real content type from magic bytes.
 
     Returns the detected type or ``None`` if the bytes are not a supported
     file type. This prevents content-type spoofing of uploads.
@@ -244,4 +245,45 @@ def sniff_content_type(data: bytes, declared: str) -> str | None:
         return "image/jpeg"
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"{\\rtf"):
+        return "application/rtf"
+    # OLE compound file (legacy .doc, and older .xls/.ppt).
+    if data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        return "application/msword"
+    # DOCX/XLSX/PPTX are ZIP containers; only accept the Word document part.
+    if data.startswith(b"PK\x03\x04"):
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                names = set(archive.namelist())
+        except Exception:  # noqa: BLE001
+            return None
+        if "word/document.xml" in names:
+            return (
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            )
+        return None
+    # Plain text: no magic bytes, so validate that it decodes and looks textual.
+    if declared in {"text/plain"} or _looks_like_text(data):
+        if _looks_like_text(data):
+            return "text/plain"
     return None
+
+
+def _looks_like_text(data: bytes) -> bool:
+    sample = data[:4096]
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    # Require a reasonable proportion of printable characters.
+    printable = sum(1 for b in sample if 32 <= b < 127 or b in (9, 10, 13))
+    return printable / len(sample) > 0.9

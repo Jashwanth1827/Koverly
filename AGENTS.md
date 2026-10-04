@@ -75,18 +75,54 @@ enforces tenant isolation, so keep every query scoped by `family_id`.
 
 ## OCR / document processing
 
-- Scanned copies (PDFs with no text layer, JPG/PNG) are read with self-hosted
-  Tesseract via `app/utils/text_extract.py` (pdf2image + poppler for PDFs).
-  `OCR_*` settings bound page count, DPI and per-page timeout.
-- Never fabricate text: if OCR is disabled/unavailable or finds nothing, the
-  document fails with an explicit reason instead of returning empty text.
+- The ingestion pipeline lives in `app/services/processing_service.py`:
+  extract text -> classify the document -> classify the insurance category ->
+  segment policies -> extract fields -> persist candidates -> chunk/embed.
+- `app/utils/text_extract.py` is the format layer. `extract_text(data, content_type)`
+  returns a `TextResult(text, page_count, source_kind, ocr_used)`. Add new
+  formats by adding a processor branch there; do not change the pipeline.
+  Supported: PDF, JPG/PNG/WEBP, DOCX, DOC, RTF, TXT.
+- Scanned copies (PDFs with no text layer, images) are read with self-hosted
+  Tesseract (pdf2image + poppler for PDFs). `OCR_*` settings bound page count,
+  DPI and per-page timeout. Never fabricate text: if OCR is disabled/unavailable
+  or finds nothing, the document fails with an explicit reason.
 - The `tesseract-ocr`, `tesseract-ocr-eng` and `poppler-utils` system packages
   are installed in both Docker images. OCR tests skip cleanly when Tesseract
   is absent locally.
+
+## Automatic understanding (taxonomy is secondary)
+
+- The user never selects a category, type, or field. Koverly infers them.
+- `app/ai/taxonomy.py` holds the vocabularies: `DocumentClass`,
+  `InsuranceCategory`, per-category policy types, and the dynamic
+  `CATEGORY_FIELD_PROFILES`. Categories map onto the persisted `PolicyType`
+  via `CATEGORY_TO_POLICY_TYPE`; anything without a slot maps to `other` while
+  the real category and all detail are preserved.
+- `app/ai/base.py` defines the extraction contract: `CandidateField`
+  (value + confidence + source_page + source_text + `evidence`),
+  `PolicyCandidate` (one policy), `DocumentAnalysis` (one document).
+  `AIProvider.extract_candidates()` returns one or more candidates.
+- `null_provider` segments bundles on policy boundaries corroborated by a
+  policy number, then classifies and extracts per segment. `openai_provider`
+  asks the model for every policy and falls back to the deterministic provider
+  on any failure. Keep both paths non-fabricating: absent fields must be
+  `evidence="not_found"` with `value=None`.
+- Persisted in `document_analyses`, `policy_candidates`, `policy_candidate_fields`.
+  Legacy `policy_extractions` are still written for the first candidate so the
+  older review flow keeps working.
+- Review endpoints: `GET .../documents/{id}/analysis`,
+  `POST .../candidates/{cid}/confirm`, `POST .../candidates/{cid}/reject`.
+  Nothing is authoritative until the user confirms; a value the user edits is
+  marked `user_edited`, an unchanged confirmation `user_confirmed`.
+
+## Extraction pattern notes
+
 - Extraction patterns in `app/ai/null_provider.py` are tuned for real OCR noise
   (labels running together, relationship text on the nominee line, "hrs on"
   period ranges). Prefer line-anchored, label-required patterns; add a
   regression test with the offending OCR text when fixing one.
+- Fields extracted from a later segment of a bundle must cite the real page
+  number; pass `page_offset` when extracting a segment.
 
 ## Database / deployment notes
 
