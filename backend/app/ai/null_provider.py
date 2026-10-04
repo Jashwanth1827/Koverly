@@ -35,6 +35,12 @@ _DATE = (
     r"([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}"
     r"|[0-9]{1,2}[ \t\-][A-Za-z]{3,9}[ \t,\-]+[0-9]{4})"
 )
+# Same shape without a capture group, for the leading date of a range where the
+# value we want is the *second* date.
+_DATE_NC = (
+    r"(?:[0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}"
+    r"|[0-9]{1,2}[ \t\-][A-Za-z]{3,9}[ \t,\-]+[0-9]{4})"
+)
 # A money amount, tolerating currency symbols, thousands separators and words
 # like "lakh"/"crore". Horizontal whitespace only, so it never jumps lines.
 _MONEY = (
@@ -64,14 +70,19 @@ _FIELD_PATTERNS: dict[str, list[str]] = {
         r"^([A-Z]{2,8}\s+of\s+[A-Z][A-Za-z]+(?:[ \t][A-Z][A-Za-z]+){0,3})$",
     ],
     "policyholder_name": [
-        r"(?:policy\s*holder(?:\s*name)?|name\s+of\s+(?:the\s+)?(?:insured|policyholder)|insured\s*name|proposer(?:\s*name)?)\s*[:\-]\s*([A-Za-z .'\-]{3,80})",
+        # Line-anchored label so a mid-line relationship label such as
+        # "Relationship to Policyholder: Wife" is never mistaken for the name.
+        r"^\s*(?:policy\s*holder['\u2019]?s?\s*name|name\s+of\s+(?:the\s+)?(?:insured|policyholder)|insured\s*name|proposer(?:\s*name)?|policy\s*holder\s*[:\-])\s*[:\-]?\s*(.+)$",
         # "Dear Mr A B C ," / "issued to Mr A B C" / "in the name of Ms A B C".
         r"(?:dear|issued\s+to|in\s+the\s+name\s+of)\s+(?:mr|mrs|ms|shri|smt|dr)\.?\s+([A-Za-z][A-Za-z .'\-]{2,60})",
         # A line consisting only of a salutation and a name, e.g. "Mr A B C".
         r"^(?:mr|mrs|ms|shri|smt|dr)\.?\s+([A-Za-z][A-Za-z .'\-]{2,60})$",
     ],
     "sum_insured": [
-        rf"(?:sum\s*insured|sum\s*assured|coverage\s*amount|insured\s*amount|idv|insured\s*declared\s*value)\s*[:\-]?\s*{_CUR}{_MONEY}",
+        # Prefer the total (base + multiplier) over the base sum insured.
+        rf"(?:total\s*sum\s*insured)\s*[:\-]?\s*(?:@\)?\s*)?{_CUR}{_MONEY}",
+        rf"(?:base\s*sum\s*insured)\s*[:\-]?\s*(?:@\)?\s*)?{_CUR}{_MONEY}",
+        rf"(?:sum\s*insured|sum\s*assured|coverage\s*amount|insured\s*amount|idv|insured\s*declared\s*value)\s*[:\-]?\s*(?:@\)?\s*)?{_CUR}{_MONEY}",
     ],
     "premium": [
         # "has paid Rs. 23660" (Section 80D certificate) / "premium of Rs. 12000".
@@ -82,13 +93,16 @@ _FIELD_PATTERNS: dict[str, list[str]] = {
         r"(?:premium\s*(?:frequency|mode)|payment\s*(?:frequency|mode)|mode\s*of\s*payment)\s*[:\-]\s*([A-Za-z ]{4,20})",
     ],
     "start_date": [
-        rf"(?:start\s*date|commencement\s*date|date\s*of\s*commencement|inception\s*date|effective\s*(?:from|date)|policy\s*period\s*(?:from|start)|period\s*of\s*insurance|insurance\s*period|risk\s*(?:start|commencement)\s*date)\s*[:\-]?\s*{_DATE}",
-        # "Policy Period: 01/04/2024 to 31/03/2025" - first date is the start.
-        rf"(?:policy\s*period|period\s*of\s*insurance|insurance\s*period)\s*[:\-]?\s*{_DATE}\s*(?:to|upto|up\s*to|-|\u2013)",
-        # "for period of 05/01/2023 to 04/01/2024".
+        # "Policy Period From 00:01 hrs on 05/01/2023 To 24:00 hrs on 04/01/2024"
+        # must win over "First policy inception date" (which is a different date).
+        rf"(?:policy\s*period|period\s*of\s*insurance|insurance\s*period)\s*(?:from)?\s*(?:[0-9]{{1,2}}:[0-9]{{2}}\s*hrs?\s*on\s*)?{_DATE}",
+        rf"(?:start\s*date|commencement\s*date|date\s*of\s*commencement|effective\s*(?:from|date)|risk\s*(?:start|commencement)\s*date)\s*[:\-]?\s*{_DATE}",
         rf"(?:for\s+)?period\s+of\s*[:\-]?\s*{_DATE}\s*(?:to|upto|up\s*to|-|\u2013)",
     ],
     "expiry_date": [
+        # "Policy Period From 00:01 hrs on 05/01/2023 To 24:00 hrs on 04/01/2024"
+        # captures the second date as the expiry (leading date is non-capturing).
+        rf"(?:policy\s*period|period\s*of\s*insurance|insurance\s*period)\s*(?:from)?\s*(?:[0-9]{{1,2}}:[0-9]{{2}}\s*hrs?\s*on\s*)?{_DATE_NC}\s*(?:to|upto|up\s*to|-|\u2013)\s*(?:[0-9]{{1,2}}:[0-9]{{2}}\s*hrs?\s*on\s*)?{_DATE}",
         rf"(?:expiry\s*date|expiration\s*date|end\s*date|date\s*of\s*expiry|valid\s*(?:up\s*)?to|policy\s*period\s*(?:to|upto|up\s*to)|risk\s*end\s*date)\s*[:\-]?\s*{_DATE}",
         # "Policy Period: 01/04/2024 to 31/03/2025" - the date after "to".
         rf"(?:policy\s*period|period\s*of\s*insurance|insurance\s*period)\s*[:\-]?\s*[0-9]{{1,4}}[\-/][0-9]{{1,2}}[\-/][0-9]{{1,4}}\s*(?:to|upto|up\s*to|-|\u2013)\s*{_DATE}",
@@ -101,7 +115,9 @@ _FIELD_PATTERNS: dict[str, list[str]] = {
         r"(?:nominee(?:\s*name)?)\s*[:\-]\s*([A-Za-z .'\-]{3,80})",
     ],
     "tpa": [
-        r"(?:tpa|third\s*party\s*administrator)\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80})",
+        r"(?:tpa|third\s*party\s*administrator)\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80}?)(?:\s{2,}|$|\s+(?:for|on|address|tel|email|location)\b)",
+        # "Claim Administrator : HDFC ERGO ..." (common on health schedules).
+        r"claim\s*administrator\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80}?)(?:\s{2,}|$|\s+(?:for|on|address|tel|email|location)\b)",
     ],
     "claim_contact": [
         r"(?:claim\s*(?:contact|helpline|phone|number)|toll\s*free|helpline)\s*[:\-]?\s*([0-9][0-9\-\s]{6,20})",
@@ -142,13 +158,24 @@ _NAME_STOP = re.compile(
     r"policy|welcome|please|and\s+zero|rupees)\b",
     re.IGNORECASE,
 )
+# OCR'd schedule rows run labels together; cut a captured name at the next label
+# (e.g. "... Relationship to Policyholder: Wife", "... Date of Birth 09/06/1975").
+_LABEL_STOP = re.compile(
+    r"\s+(?:relationship|date\s+of\s+birth|member|particulars|policy\s+holder|"
+    r"policyholder|nominee|address|contact|email|tel|age|gender|sum\s+insured|"
+    r"base\s+sum|multiplier|plan|rider)\b",
+    re.IGNORECASE,
+)
 
 
 def _clean_name(value: str) -> str:
-    """Trim a captured person/company name of salutations and trailing prose."""
+    """Trim a captured person/company name of salutations, labels and prose."""
     value = _SALUTATION.split(value)[0]
+    value = _LABEL_STOP.split(value)[0]
     value = _NAME_STOP.split(value)[0]
-    return value.strip(" .,-")
+    # Drop a leading honorific captured after a label ("Name Mr A B C").
+    value = re.sub(r"^(?:mr|mrs|ms|shri|smt|dr)\.?\s+", "", value, flags=re.IGNORECASE)
+    return value.strip(" .,-:")
 
 
 def _normalize(text: str) -> str:

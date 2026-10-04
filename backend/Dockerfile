@@ -7,7 +7,11 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
@@ -26,7 +30,10 @@ RUN pip install --no-cache-dir \
     "httpx>=0.27.0" \
     "aiofiles>=24.1.0" \
     "pypdf>=4.3.0" \
-    "numpy>=1.26.0"
+    "numpy>=1.26.0" \
+    "pytesseract>=0.3.10" \
+    "pdf2image>=1.17.0" \
+    "Pillow>=10.0.0"
 
 COPY app ./app
 
