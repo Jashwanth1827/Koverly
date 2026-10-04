@@ -48,27 +48,35 @@ _CUR = r"(?:rs\.?|inr|\u20b9|\$)?[ \t]*"
 # numbers as "premium". Patterns are ordered most-specific first.
 _FIELD_PATTERNS: dict[str, list[str]] = {
     "policy_number": [
-        # "Policy No.:", "Policy No:", "Policy Number -", "Policy #"
+        # Spaced numeric policy numbers, e.g. "Policy No : 2805 2035 3959 6703 000".
+        rf"(?:policy\s*(?:no|number|#)\.?\s*[:\-#]?\s*)([0-9][0-9 \t\-]{{6,40}}[0-9])",
         rf"(?:policy\s*(?:no|number|#)\.?\s*[:\-#]?\s*)([A-Za-z0-9][A-Za-z0-9\-\/]{{3,40}})",
         rf"(?:policy\s*id\s*[:\-]?\s*)([A-Za-z0-9][A-Za-z0-9\-\/]{{3,40}})",
     ],
     "insurer": [
         r"(?:insurer|insurance\s+company|underwritten\s+by|issued\s+by)\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80})",
         # Company-style heading, e.g. "HDFC ERGO General Insurance Company
-        # Limited". Excludes title lines that merely contain the word "policy".
-        r"^(?!.*\bpolicy\b)([A-Z][A-Za-z0-9&.,'\- ]{2,80}?(?:Insurance|Assurance)\s+(?:Company|Co\.?|Limited|Ltd\.?)[A-Za-z0-9&.,'\- ]{0,30})$",
-        r"^(?!.*\bpolicy\b)([A-Z][A-Za-z0-9&.,'\- ]{2,80}?(?:Insurance|Assurance|Life)\b[^\n]{0,40})$",
+        # Limited". Excludes title lines that merely contain the word "policy"
+        # or boilerplate such as "For and on behalf of ...".
+        r"^(?!.*\b(?:policy|for\s+and\s+on\s+behalf|on\s+behalf|authorised|authorized|signatory|welcome|please|dear)\b)([A-Z][A-Za-z0-9&.,'\- ]{2,80}?(?:Insurance|Assurance)\s+(?:Company|Co\.?|Limited|Ltd\.?)[A-Za-z0-9&.,'\- ]{0,30})$",
+        r"^(?!.*\b(?:policy|for\s+and\s+on\s+behalf|on\s+behalf|authorised|authorized|signatory|welcome|please|dear)\b)([A-Z][A-Za-z0-9&.,'\- ]{2,80}?(?:Insurance|Assurance|Life)\b[^\n]{0,40})$",
         # Abbreviation-style insurer names, e.g. "LIC of India".
         r"^([A-Z]{2,8}\s+of\s+[A-Z][A-Za-z]+(?:[ \t][A-Z][A-Za-z]+){0,3})$",
     ],
     "policyholder_name": [
         r"(?:policy\s*holder(?:\s*name)?|name\s+of\s+(?:the\s+)?(?:insured|policyholder)|insured\s*name|proposer(?:\s*name)?)\s*[:\-]\s*([A-Za-z .'\-]{3,80})",
+        # "Dear Mr A B C ," / "issued to Mr A B C" / "in the name of Ms A B C".
+        r"(?:dear|issued\s+to|in\s+the\s+name\s+of)\s+(?:mr|mrs|ms|shri|smt|dr)\.?\s+([A-Za-z][A-Za-z .'\-]{2,60})",
+        # A line consisting only of a salutation and a name, e.g. "Mr A B C".
+        r"^(?:mr|mrs|ms|shri|smt|dr)\.?\s+([A-Za-z][A-Za-z .'\-]{2,60})$",
     ],
     "sum_insured": [
         rf"(?:sum\s*insured|sum\s*assured|coverage\s*amount|insured\s*amount|idv|insured\s*declared\s*value)\s*[:\-]?\s*{_CUR}{_MONEY}",
     ],
     "premium": [
-        rf"(?:premium\s*(?:amount|paid|payable)?|total\s*premium)\s*[:\-]?\s*{_CUR}{_MONEY}",
+        # "has paid Rs. 23660" (Section 80D certificate) / "premium of Rs. 12000".
+        rf"(?:has\s+paid|premium\s+(?:of|amount|paid|payable|is))\s*[:\-]?\s*{_CUR}{_MONEY}",
+        rf"(?:total\s*premium|premium)\s*[:\-]?\s*{_CUR}{_MONEY}",
     ],
     "premium_frequency": [
         r"(?:premium\s*(?:frequency|mode)|payment\s*(?:frequency|mode)|mode\s*of\s*payment)\s*[:\-]\s*([A-Za-z ]{4,20})",
@@ -77,11 +85,14 @@ _FIELD_PATTERNS: dict[str, list[str]] = {
         rf"(?:start\s*date|commencement\s*date|date\s*of\s*commencement|inception\s*date|effective\s*(?:from|date)|policy\s*period\s*(?:from|start)|period\s*of\s*insurance|insurance\s*period|risk\s*(?:start|commencement)\s*date)\s*[:\-]?\s*{_DATE}",
         # "Policy Period: 01/04/2024 to 31/03/2025" - first date is the start.
         rf"(?:policy\s*period|period\s*of\s*insurance|insurance\s*period)\s*[:\-]?\s*{_DATE}\s*(?:to|upto|up\s*to|-|\u2013)",
+        # "for period of 05/01/2023 to 04/01/2024".
+        rf"(?:for\s+)?period\s+of\s*[:\-]?\s*{_DATE}\s*(?:to|upto|up\s*to|-|\u2013)",
     ],
     "expiry_date": [
         rf"(?:expiry\s*date|expiration\s*date|end\s*date|date\s*of\s*expiry|valid\s*(?:up\s*)?to|policy\s*period\s*(?:to|upto|up\s*to)|risk\s*end\s*date)\s*[:\-]?\s*{_DATE}",
         # "Policy Period: 01/04/2024 to 31/03/2025" - the date after "to".
         rf"(?:policy\s*period|period\s*of\s*insurance|insurance\s*period)\s*[:\-]?\s*[0-9]{{1,4}}[\-/][0-9]{{1,2}}[\-/][0-9]{{1,4}}\s*(?:to|upto|up\s*to|-|\u2013)\s*{_DATE}",
+        rf"(?:for\s+)?period\s+of\s*[:\-]?\s*[0-9]{{1,4}}[\-/][0-9]{{1,2}}[\-/][0-9]{{1,4}}\s*(?:to|upto|up\s*to|-|\u2013)\s*{_DATE}",
     ],
     "renewal_date": [
         rf"(?:renewal\s*date|due\s*date|next\s*renewal|renewal\s*due)\s*[:\-]?\s*{_DATE}",
@@ -107,8 +118,13 @@ _FIELD_PATTERNS: dict[str, list[str]] = {
 }
 
 _TYPE_HINTS: dict[str, list[str]] = {
-    "health": ["health insurance", "mediclaim", "hospitalisation", "hospitalization", "tpa"],
-    "life": ["life insurance", "term plan", "sum assured", "maturity", "endowment", "jeevan"],
+    "health": [
+        "health insurance", "health policy", "mediclaim", "hospitalisation",
+        "hospitalization", "tpa", "cashless", "hospital", "floater",
+        "sum insured", "room rent", "pre-existing", "pre existing",
+        "day care", "critical illness", "restore",
+    ],
+    "life": ["life insurance", "term plan", "sum assured", "maturity", "endowment", "jeevan", "death benefit", "nominee"],
     "motor": ["motor insurance", "vehicle", "car insurance", "private car", "package policy", "registration number", "idv", "two wheeler", "bike"],
     "home": ["home insurance", "household", "property insurance", "fire insurance"],
     "travel": ["travel insurance", "trip", "baggage", "flight delay"],
@@ -116,6 +132,23 @@ _TYPE_HINTS: dict[str, list[str]] = {
 }
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+|\n+")
+
+# A salutation introduces a person's name; anything after the *next* salutation
+# is a different clause ("Dear Mr A B C, welcome...").
+_SALUTATION = re.compile(r"\s+(?:mr|mrs|ms|shri|smt|dr)\.?\s+", re.IGNORECASE)
+# Trailing prose that can bleed into a name capture.
+_NAME_STOP = re.compile(
+    r"\s+(?:has\s+paid|issued|for\s+period|towards|is\s+issued|contact|email|"
+    r"policy|welcome|please|and\s+zero|rupees)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_name(value: str) -> str:
+    """Trim a captured person/company name of salutations and trailing prose."""
+    value = _SALUTATION.split(value)[0]
+    value = _NAME_STOP.split(value)[0]
+    return value.strip(" .,-")
 
 
 def _normalize(text: str) -> str:
@@ -155,6 +188,19 @@ class NullProvider(AIProvider):
             match, page = _search_with_page(text, patterns)
             if match:
                 value = _normalize(match.strip())
+                if name in {"policyholder_name", "nominee"}:
+                    value = _clean_name(value)
+                if not value:
+                    fields.append(
+                        ExtractedField(
+                            field_name=name,
+                            value=None,
+                            confidence=0.0,
+                            source_page=None,
+                            found=False,
+                        )
+                    )
+                    continue
                 fields.append(
                     ExtractedField(
                         field_name=name,
