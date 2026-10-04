@@ -73,6 +73,21 @@ enforces tenant isolation, so keep every query scoped by `family_id`.
   in-memory object URL) rather than putting file URLs in the page. Surface API
   errors with `errorMessage(err)`.
 
+## OCR / document processing
+
+- Scanned copies (PDFs with no text layer, JPG/PNG) are read with self-hosted
+  Tesseract via `app/utils/text_extract.py` (pdf2image + poppler for PDFs).
+  `OCR_*` settings bound page count, DPI and per-page timeout.
+- Never fabricate text: if OCR is disabled/unavailable or finds nothing, the
+  document fails with an explicit reason instead of returning empty text.
+- The `tesseract-ocr`, `tesseract-ocr-eng` and `poppler-utils` system packages
+  are installed in both Docker images. OCR tests skip cleanly when Tesseract
+  is absent locally.
+- Extraction patterns in `app/ai/null_provider.py` are tuned for real OCR noise
+  (labels running together, relationship text on the nominee line, "hrs on"
+  period ranges). Prefer line-anchored, label-required patterns; add a
+  regression test with the offending OCR text when fixing one.
+
 ## Database / deployment notes
 
 - Tables are created with `Base.metadata.create_all` at startup. There is no
