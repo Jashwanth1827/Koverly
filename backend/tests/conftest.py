@@ -6,6 +6,7 @@ settings and engine bind to an isolated test database and storage directory.
 
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 from pathlib import Path
@@ -149,3 +150,50 @@ def make_pdf_bytes(text: str) -> bytes:
         f"startxref\n{xref_pos}\n%%EOF\n"
     ).encode()
     return bytes(out)
+
+
+def _render_text_image(lines: list[str]) -> bytes:
+    """Render text into a PNG so OCR has real pixels to read."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (1100, 120 + 70 * len(lines)), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        font = ImageFont.load_default(size=44)
+    except TypeError:  # pragma: no cover - very old Pillow
+        font = ImageFont.load_default()
+    for index, line in enumerate(lines):
+        draw.text((30, 40 + 70 * index), line, font=font, fill="black")
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def make_image_bytes(lines: list[str]) -> bytes:
+    """A PNG containing rendered text, for image-OCR tests."""
+    return _render_text_image(lines)
+
+
+def make_scanned_pdf_bytes(lines: list[str]) -> bytes:
+    """A PDF whose only page is an image of the text (no text layer).
+
+    Simulates a scanned policy copy so the OCR path is exercised for real.
+    """
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(_render_text_image(lines)))
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, "PDF", resolution=200.0)
+    return buffer.getvalue()
+
+
+def ocr_available() -> bool:
+    """Whether the test environment can actually run OCR."""
+    from app.utils.text_extract import ocr_available as _available
+
+    return _available()
+
+
+def skip_without_ocr() -> None:
+    if not ocr_available():
+        pytest.skip("Tesseract OCR is not available in this environment")

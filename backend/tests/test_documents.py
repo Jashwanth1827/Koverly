@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import io
+
 from tests.conftest import (
     auth_headers,
     create_family,
     create_policy,
+    make_image_bytes,
     make_pdf_bytes,
+    make_scanned_pdf_bytes,
     register,
+    skip_without_ocr,
 )
 
 SAMPLE_POLICY_TEXT = """Health Insurance Policy
@@ -313,24 +318,118 @@ def test_document_delete_removes_file(client):
     ).status_code == 404
 
 
-def test_image_upload_fails_processing_with_clear_reason(client):
-    """OCR is not configured, so images must fail explicitly — never fabricate."""
+def test_image_upload_is_ocrd(client):
+    """An image policy copy is OCR'd and its fields extracted."""
+    skip_without_ocr()
     user, family = _setup(client)
-    # Minimal valid PNG header.
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    png = make_image_bytes(
+        [
+            "Health Insurance Policy",
+            "Policy Number: SCAN-998877",
+            "Insurer: Scanned Health Co",
+            "Sum Insured: 750000",
+        ]
+    )
     resp = client.post(
         f"/api/v1/families/{family['id']}/documents",
         files={"file": ("scan.png", png, "image/png")},
         headers=auth_headers(user["access_token"]),
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 201, resp.text
     doc_id = resp.json()["id"]
     detail = client.get(
         f"/api/v1/families/{family['id']}/documents/{doc_id}",
         headers=auth_headers(user["access_token"]),
     ).json()
+    assert detail["status"] == "processed", detail
+    fields = {
+        f["field_name"]: f
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc_id}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+    }
+    assert fields["policy_number"]["found"] is True
+    assert "SCAN" in fields["policy_number"]["value"].upper()
+    assert fields["sum_insured"]["found"] is True
+
+
+def test_scanned_pdf_is_ocrd(client):
+    """A PDF with no text layer (a scan) is rendered and OCR'd."""
+    skip_without_ocr()
+    user, family = _setup(client)
+    pdf = make_scanned_pdf_bytes(
+        [
+            "Health Insurance Policy",
+            "Policy Number: SCAN-445566",
+            "Insurer: Scanned Health Co",
+            "Sum Insured: 800000",
+        ]
+    )
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("scan.pdf", pdf, "application/pdf")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 201, resp.text
+    doc_id = resp.json()["id"]
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc_id}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert detail["status"] == "processed", detail
+    fields = {
+        f["field_name"]: f
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc_id}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+    }
+    assert fields["policy_number"]["found"] is True
+    assert "SCAN" in fields["policy_number"]["value"].upper()
+
+
+def test_unreadable_image_fails_with_clear_reason(client):
+    """A blank/unreadable image must fail explicitly — never fabricate."""
+    skip_without_ocr()
+    user, family = _setup(client)
+    from PIL import Image
+
+    blank = io.BytesIO()
+    Image.new("RGB", (200, 200), "white").save(blank, "PNG")
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("blank.png", blank.getvalue(), "image/png")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 201
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{resp.json()['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
     assert detail["status"] == "failed"
-    assert "OCR" in (detail["processing_error"] or "")
+    assert "readable text" in (detail["processing_error"] or "").lower()
+
+
+def test_scanned_pdf_fails_clearly_when_ocr_disabled(client, monkeypatch):
+    """With OCR off, a text-less PDF must fail with an explicit reason."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "OCR_ENABLED", False)
+    user, family = _setup(client)
+    pdf = make_scanned_pdf_bytes(["Health Insurance Policy", "Sum Insured: 800000"])
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("scan.pdf", pdf, "application/pdf")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 201
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{resp.json()['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert detail["status"] == "failed"
+    assert "readable text" in (detail["processing_error"] or "").lower()
 
 
 REALISTIC_POLICY_TEXT = """HDFC ERGO General Insurance Company Limited
@@ -411,6 +510,63 @@ def test_classifies_hdfc_style_letter_as_health():
     from app.ai.null_provider import NullProvider
 
     assert asyncio.run(NullProvider().classify_document(HDFC_STYLE_POLICY_TEXT)) == "health"
+
+
+# An OCR'd schedule page: labels run together across lines, and a relationship
+# label ("Relationship to Policyholder: Wife") sits on the same line as the
+# nominee's name. Extraction must not mistake it for the policyholder.
+OCR_SCHEDULE_TEXT = """HDFC ERGO General Insurance Company Limited
+
+Policy Schedule - Optima Restore Floater
+
+Policy Number 2805 2035 3959 6703 000
+
+Policy Holder's Name Mr A VS Niranjan
+
+First policy inception date 03/01/2013 Policy Issuance Date 17/12/2022
+
+Policy Period From 00:01 hrs on 05/01/2023 To 24:00 hrs on 04/01/2024
+
+Relationship to Policy Holder Self Wife Son - - -
+
+Base Sum Insured @) 500000
+
+Multiplier Benefit SI (=) 500000
+
+Total Sum Insured @) 1000000
+
+Nominee Details
+
+Nominee Name : Mrs A L Pallavi Relationship to Policyholder: Wife
+
+Claim Administrator : HDFC ERGO General Insurance Company Ltd
+"""
+
+
+def test_extraction_handles_ocr_schedule_page(client):
+    """Regression: OCR'd labels must not bleed into the wrong fields."""
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], OCR_SCHEDULE_TEXT,
+        name="ocr_schedule.pdf",
+    ).json()
+    fields = {
+        f["field_name"]: f["value"]
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+        if f["found"]
+    }
+    # "Relationship to Policyholder: Wife" must never become the holder's name.
+    assert fields["policyholder_name"] == "A VS Niranjan"
+    # The policy period wins over the "first policy inception date".
+    assert fields["start_date"] == "05/01/2023"
+    assert fields["expiry_date"] == "04/01/2024"
+    # The total (base + multiplier) is preferred over the base sum insured.
+    assert fields["sum_insured"] == "1000000"
+    # The nominee's relationship (and honorific) must be trimmed off the name.
+    assert fields["nominee"] == "A L Pallavi"
 
 
 def test_extraction_handles_realistic_document_labels(client):

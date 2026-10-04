@@ -20,6 +20,7 @@ information in an emergency.
 | Family | One family group with members (self, spouse, parents, children, siblings) and roles (owner, admin, member, viewer). |
 | Policies | Life, health, motor, home, travel, personal accident, and other policies with extensible metadata. |
 | Documents | Private policy document vault (PDF/JPG/PNG) with upload, view, download, delete, and processing status. |
+| OCR | Self-hosted Tesseract reads scanned policy copies — PDFs without a text layer and JPG/PNG images — so their fields are extractable too. |
 | AI extraction | Text extraction, classification, and structured field extraction with confidence and source pages. Fields you review are the only ones applied. |
 | Ask InsuraOS | Grounded Q&A over your own policies, family, claims, and documents, with source references. |
 | Insurance Intelligence | Expiring policies, missing information, and *potential* overlaps — never stated as advice. |
@@ -78,6 +79,10 @@ app/
   separated from system instructions and the user question.
 - **Asynchronous processing** — uploads return immediately; extraction and indexing run in the
   background and update document status.
+- **Self-hosted OCR** — pages without a text layer (scans) are rendered with `pdf2image`
+  (poppler) and read with Tesseract. OCR is bounded by page count and per-page timeout, and it
+  degrades to a clear failure message rather than fabricating text when it is unavailable or
+  finds nothing.
 
 ---
 
@@ -172,6 +177,10 @@ All secrets come from environment variables — nothing sensitive is committed. 
 | `DATABASE_URL` | SQLite by default; PostgreSQL via `postgresql+asyncpg://…` in production. |
 | `STORAGE_BACKEND` | `local` or `s3`. |
 | `SIGNED_URL_TTL_SECONDS` | Lifetime of document access URLs. |
+| `OCR_ENABLED` | `true`/`false` — self-hosted Tesseract OCR for scanned copies. |
+| `OCR_LANGUAGES` | Tesseract language codes (default `eng`). |
+| `OCR_DPI` / `OCR_MAX_PAGES` / `OCR_PAGE_TIMEOUT_SECONDS` | Rendering quality and OCR bounds. |
+| `TESSERACT_CMD` | Optional absolute path to the tesseract binary. |
 | `AI_PROVIDER` | `null` (default, offline, no fabrication) or `openai`. |
 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | External model credentials and endpoint. |
 | `NOTIFICATION_BACKEND` | `noop` or `webhook`. |
@@ -202,5 +211,5 @@ All secrets come from environment variables — nothing sensitive is committed. 
 
 ## Roadmap (extension points)
 
-Email ingestion, WhatsApp notifications, OCR providers, insurer integrations, employer benefits,
+Email ingestion, WhatsApp notifications, insurer integrations, employer benefits,
 advisor portal, B2B accounts, analytics, and multilingual support.
