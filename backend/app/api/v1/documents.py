@@ -22,7 +22,7 @@ from app.api.deps import (
     require_role,
 )
 from app.core.errors import PermissionDeniedError
-from app.integrations.storage import get_storage
+from app.integrations.storage import content_disposition, get_storage
 from app.models.enums import DocumentType, FamilyRole
 from app.schemas.common import Message, Page
 from app.schemas.document import (
@@ -37,6 +37,15 @@ from app.services import document_service, extraction_service, processing_servic
 logger = logging.getLogger("koverly.documents.api")
 
 router = APIRouter(tags=["documents"])
+
+# Content types we are willing to serve back; anything else is downgraded to
+# application/octet-stream so a crafted filename cannot force script execution.
+_SERVEABLE_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
 
 WriterCtx = Annotated[FamilyContext, Depends(require_role(FamilyRole.MEMBER))]
 AdminCtx = Annotated[FamilyContext, Depends(require_role(FamilyRole.ADMIN))]
@@ -159,10 +168,13 @@ async def reprocess_document(
     response_model=SignedUrlOut,
 )
 async def create_signed_url(
-    document_id: str, ctx: FamilyCtx, db: DbSession
+    document_id: str,
+    ctx: FamilyCtx,
+    db: DbSession,
+    disposition: str = Query(default="inline", pattern="^(inline|attachment)$"),
 ) -> SignedUrlOut:
     document = await document_service.get_document(db, ctx.family_id, document_id)
-    url = document_service.signed_download_url(document)
+    url = document_service.signed_download_url(document, disposition=disposition)
     return SignedUrlOut(url=url, expires_in=300)
 
 
@@ -177,7 +189,9 @@ async def download_document(
         content=data,
         media_type=document.content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{document.original_filename}"',
+            "Content-Disposition": content_disposition(
+                "attachment", document.original_filename
+            ),
             "Cache-Control": "no-store",
         },
     )
@@ -192,18 +206,31 @@ async def get_signed_file(
     key: str = Query(...),
     expires: int = Query(...),
     signature: str = Query(...),
+    disposition: str = Query(default="inline", pattern="^(inline|attachment)$"),
+    content_type: str = Query(default="application/octet-stream"),
+    filename: str | None = Query(default=None),
 ) -> Response:
     storage = get_storage()
-    if not storage.verify_signed_url(key, expires, signature):
+    # The signature covers the key, expiry, disposition and content type, so a
+    # client cannot turn an inline preview into something else.
+    if not storage.verify_signed_url(
+        key, expires, signature, disposition=disposition, content_type=content_type
+    ):
         raise PermissionDeniedError("This link is invalid or has expired.")
     # The key is opaque and only ever issued after authorization, so a valid
     # signature is sufficient here; we still avoid leaking other metadata.
     data = await storage.get(key)
-    return Response(
-        content=data,
-        media_type="application/octet-stream",
-        headers={"Cache-Control": "no-store"},
-    )
+    # Restrict to a small allowlist so an attacker who controls the filename
+    # cannot smuggle a scriptable content type into the response.
+    safe_type = content_type if content_type in _SERVEABLE_TYPES else "application/octet-stream"
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+    }
+    if filename:
+        headers["Content-Disposition"] = content_disposition(disposition, filename)
+    return Response(content=data, media_type=safe_type, headers=headers)
 
 
 # --------------------------------------------------------------------------- #

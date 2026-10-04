@@ -18,10 +18,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO
+from urllib.parse import urlencode
 
 from app.core.config import settings
 from app.core.errors import AppError
@@ -45,17 +47,54 @@ class StorageBackend(ABC):
     async def delete(self, key: str) -> None: ...
 
     @abstractmethod
-    def signed_url(self, key: str, ttl_seconds: int | None = None) -> str: ...
+    def signed_url(
+        self,
+        key: str,
+        ttl_seconds: int | None = None,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+        filename: str | None = None,
+    ) -> str: ...
 
     @abstractmethod
-    def verify_signed_url(self, key: str, expires: int, signature: str) -> bool: ...
+    def verify_signed_url(
+        self,
+        key: str,
+        expires: int,
+        signature: str,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+    ) -> bool: ...
 
 
-def _sign(key: str, expires: int) -> str:
-    msg = f"{key}:{expires}".encode()
+def _sign(key: str, expires: int, disposition: str, content_type: str) -> str:
+    msg = f"{key}:{expires}:{disposition}:{content_type}".encode()
     return hmac.new(
         settings.SECRET_KEY.encode(), msg, hashlib.sha256
     ).hexdigest()
+
+
+def sanitize_filename(name: str) -> str:
+    """Return a header-safe filename (no quotes/CR/LF/path separators)."""
+    base = os.path.basename(name or "document")
+    cleaned = re.sub(r'[^A-Za-z0-9._\- ]+', "_", base).strip().strip(".")
+    return cleaned[:200] or "document"
+
+
+def content_disposition(disposition: str, filename: str) -> str:
+    """Build a safe Content-Disposition value.
+
+    ``inline`` lets the browser preview the file (used for in-app preview);
+    ``attachment`` forces a download with the original filename.
+    """
+    kind = "inline" if disposition == "inline" else "attachment"
+    safe = sanitize_filename(filename)
+    # RFC 5987 form keeps non-ASCII names intact; the plain form is a fallback.
+    from urllib.parse import quote
+
+    return f"{kind}; filename=\"{safe}\"; filename*=UTF-8''{quote(safe)}"
 
 
 class LocalStorage(StorageBackend):
@@ -86,15 +125,40 @@ class LocalStorage(StorageBackend):
         if path.exists():
             path.unlink()
 
-    def signed_url(self, key: str, ttl_seconds: int | None = None) -> str:
+    def signed_url(
+        self,
+        key: str,
+        ttl_seconds: int | None = None,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+        filename: str | None = None,
+    ) -> str:
         expires = int(time.time()) + (ttl_seconds or settings.SIGNED_URL_TTL_SECONDS)
-        signature = _sign(key, expires)
-        return f"/api/v1/documents/file?key={key}&expires={expires}&signature={signature}"
+        signature = _sign(key, expires, disposition, content_type)
+        params = {
+            "key": key,
+            "expires": expires,
+            "signature": signature,
+            "disposition": disposition,
+            "content_type": content_type,
+        }
+        if filename:
+            params["filename"] = filename
+        return f"/api/v1/documents/file?{urlencode(params)}"
 
-    def verify_signed_url(self, key: str, expires: int, signature: str) -> bool:
+    def verify_signed_url(
+        self,
+        key: str,
+        expires: int,
+        signature: str,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+    ) -> bool:
         if expires < int(time.time()):
             return False
-        return hmac.compare_digest(_sign(key, expires), signature)
+        return hmac.compare_digest(_sign(key, expires, disposition, content_type), signature)
 
 
 class S3Storage(StorageBackend):
@@ -121,10 +185,26 @@ class S3Storage(StorageBackend):
     async def delete(self, key: str) -> None:
         raise StorageError("S3 backend is not implemented in this build.")
 
-    def signed_url(self, key: str, ttl_seconds: int | None = None) -> str:
+    def signed_url(
+        self,
+        key: str,
+        ttl_seconds: int | None = None,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+        filename: str | None = None,
+    ) -> str:
         raise StorageError("S3 backend is not implemented in this build.")
 
-    def verify_signed_url(self, key: str, expires: int, signature: str) -> bool:
+    def verify_signed_url(
+        self,
+        key: str,
+        expires: int,
+        signature: str,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+    ) -> bool:
         return False
 
 

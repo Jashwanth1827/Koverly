@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { familyApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
-import { ApiError } from "@/api/client";
+import { ApiError, errorMessage } from "@/api/client";
 import { ConfirmButton, Modal } from "@/components/Modal";
 import { Badge, EmptyState, ErrorState, Loading, PageHeader } from "@/components/ui";
 import { RELATIONSHIP_LABELS, formatDate, initials, relationshipLabel } from "@/lib/format";
@@ -73,7 +73,7 @@ export function FamilyPage() {
                           await familyApi.changeRole(activeFamilyId, m.id, e.target.value);
                           members.reload();
                         } catch (err) {
-                          setError(err instanceof ApiError ? err.message : "Could not change role.");
+                          setError(errorMessage(err, "Could not change role."));
                         }
                       }}
                     >
@@ -134,6 +134,7 @@ function AddMemberModal({
     date_of_birth: "",
     blood_group: "",
     phone: "",
+    email: "",
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -144,15 +145,16 @@ function AddMemberModal({
     setError(null);
     try {
       await familyApi.addMember(familyId, {
-        name: form.name,
+        name: form.name.trim(),
         relationship: form.relationship,
         date_of_birth: form.date_of_birth || null,
         blood_group: form.blood_group || null,
-        phone: form.phone || null,
+        phone: form.phone.trim() || null,
+        email: form.email.trim() || null,
       } as Partial<FamilyMember>);
       onDone();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not add the member.");
+      setError(errorMessage(err, "Could not add the member."));
     } finally {
       setBusy(false);
     }
@@ -183,14 +185,27 @@ function AddMemberModal({
           </div>
           <div>
             <label className="label" htmlFor="m-blood">Blood group</label>
-            <input id="m-blood" className="input" value={form.blood_group}
+            <input id="m-blood" className="input" list="blood-groups" placeholder="e.g. O+"
+              value={form.blood_group}
               onChange={(e) => setForm((f) => ({ ...f, blood_group: e.target.value }))} />
+            <datalist id="blood-groups">
+              {["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"].map((bg) => (
+                <option key={bg} value={bg} />
+              ))}
+            </datalist>
           </div>
         </div>
-        <div>
-          <label className="label" htmlFor="m-phone">Phone</label>
-          <input id="m-phone" className="input" value={form.phone}
-            onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} />
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label" htmlFor="m-phone">Phone</label>
+            <input id="m-phone" className="input" value={form.phone}
+              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} />
+          </div>
+          <div>
+            <label className="label" htmlFor="m-email">Email</label>
+            <input id="m-email" type="email" className="input" value={form.email}
+              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} />
+          </div>
         </div>
         {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
         <div className="flex justify-end gap-3">
@@ -229,9 +244,7 @@ function InviteModal({
       setError(
         err instanceof ApiError && err.code === "USER_NOT_FOUND"
           ? "No Koverly account uses that email yet. Ask them to sign up first."
-          : err instanceof ApiError
-            ? err.message
-            : "Could not send the invite.",
+          : errorMessage(err, "Could not send the invite."),
       );
     }
   }

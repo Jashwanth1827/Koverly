@@ -161,8 +161,21 @@ async def get_document_bytes(
     return document, data
 
 
-def signed_download_url(document: Document) -> str:
-    return get_storage().signed_url(document.storage_key)
+def signed_download_url(
+    document: Document, *, disposition: str = "inline"
+) -> str:
+    """Mint a short-lived URL for a document.
+
+    ``disposition`` is ``inline`` for in-app preview or ``attachment`` to
+    force a download. The content type is bound into the signature so it
+    cannot be tampered with.
+    """
+    return get_storage().signed_url(
+        document.storage_key,
+        disposition=disposition,
+        content_type=document.content_type,
+        filename=document.original_filename,
+    )
 
 
 async def delete_document(

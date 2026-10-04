@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { errorMessage } from "@/api/client";
 
 export function Modal({
   title,
@@ -42,22 +43,41 @@ export function ConfirmButton({
   children,
   className = "btn-danger",
   confirmLabel = "Confirm",
+  busyLabel,
 }: {
-  onConfirm: () => void;
+  onConfirm: () => Promise<void> | void;
   children: ReactNode;
   className?: string;
   confirmLabel?: string;
+  busyLabel?: string;
 }) {
   const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function confirm() {
+    setBusy(true);
+    setError(null);
+    try {
+      await onConfirm();
+      setArmed(false);
+    } catch (err) {
+      setError(errorMessage(err, "The action could not be completed."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (armed) {
     return (
-      <span className="inline-flex gap-2">
-        <button className="btn-danger" onClick={onConfirm}>
-          {confirmLabel}
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <button className="btn-danger" onClick={confirm} disabled={busy}>
+          {busy ? busyLabel ?? "Working…" : confirmLabel}
         </button>
-        <button className="btn-ghost" onClick={() => setArmed(false)}>
+        <button className="btn-ghost" onClick={() => { setArmed(false); setError(null); }} disabled={busy}>
           Cancel
         </button>
+        {error && <span role="alert" className="text-xs text-red-600">{error}</span>}
       </span>
     );
   }

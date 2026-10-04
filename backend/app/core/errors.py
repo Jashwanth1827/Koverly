@@ -88,6 +88,63 @@ def _envelope(
     return {"error": error}
 
 
+def _label(field: str) -> str:
+    label = field.replace("_", " ").strip()
+    return (label[:1].upper() + label[1:]) if label else "Value"
+
+
+def _friendly_validation_message(errors: list[dict[str, Any]]) -> str:
+    """Turn pydantic validation errors into a message naming the bad field.
+
+    A bare "Invalid request." gives the user nothing to act on. This surfaces
+    the offending field and the reason without leaking internal details.
+    """
+    parts: list[str] = []
+    for err in errors:
+        loc = [str(p) for p in err.get("loc", []) if str(p) not in {"body", "query", "path"}]
+        label = _label(loc[-1]) if loc else "Request"
+        typ = str(err.get("type", ""))
+        ctx = err.get("ctx") or {}
+        if typ == "missing":
+            parts.append(f"{label} is required.")
+        elif typ == "string_too_long":
+            limit = ctx.get("max_length")
+            parts.append(
+                f"{label} must be at most {limit} characters."
+                if limit is not None
+                else f"{label} is too long."
+            )
+        elif typ == "string_too_short":
+            limit = ctx.get("min_length")
+            parts.append(
+                f"{label} must be at least {limit} characters."
+                if limit is not None
+                else f"{label} is too short."
+            )
+        elif typ.startswith("date") or typ.startswith("datetime"):
+            parts.append(f"{label} must be a valid date.")
+        elif typ == "enum":
+            parts.append(f"{label} is not a valid option.")
+        elif typ in {"email", "value_error.email"} or (
+            typ == "value_error" and "email" in label.lower()
+        ):
+            parts.append(f"{label} must be a valid email address.")
+        elif typ == "value_error":
+            # Surface the validator's own message (strip pydantic's prefix).
+            msg = str(err.get("msg", "")).replace("Value error, ", "").strip()
+            parts.append(msg or f"{label} is invalid.")
+        elif typ in {"int_parsing", "int_type", "decimal_parsing", "float_parsing"}:
+            parts.append(f"{label} must be a number.")
+        elif typ in {"greater_than_equal", "less_than_equal"}:
+            parts.append(f"{label} is out of the allowed range.")
+        else:
+            parts.append(f"{label} is invalid.")
+    # De-duplicate while preserving order.
+    seen: set[str] = set()
+    unique = [p for p in parts if not (p in seen or seen.add(p))]
+    return " ".join(unique) or "Invalid request."
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error_handler(_: Request, exc: AppError) -> JSONResponse:
@@ -112,7 +169,11 @@ def register_exception_handlers(app: FastAPI) -> None:
             )
         return JSONResponse(
             status_code=HTTP_422,
-            content=_envelope("VALIDATION_ERROR", "Invalid request.", {"fields": details}),
+            content=_envelope(
+                "VALIDATION_ERROR",
+                _friendly_validation_message(details),
+                {"fields": details},
+            ),
         )
 
     @app.exception_handler(Exception)
