@@ -83,6 +83,8 @@ async def confirm_extractions(
         document.policy_id = policy.id
 
     for row in rows:
+        if policy_id:
+            row.policy_id = policy_id
         if row.field_name in payload.reject:
             row.status = ExtractionStatus.REJECTED.value
             continue
