@@ -296,6 +296,69 @@ Waiting Period: 30 days
 """
 
 
+# Mirrors the layout of a real HDFC ERGO health policy welcome letter (spaced
+# policy number, salutation-style name, Section 80D premium certificate, period
+# phrase). Values are synthetic.
+HDFC_STYLE_POLICY_TEXT = """Mr A B Sample
+-
+-
+HNO100 FLOT NOB27 GANDHI
+NAGAR
+BALAJI TOWERS
+HYDERABAD
+TELANGANA - 500080
+Contact No.: 9000000000
+Email: sample@example.com
+Policy No : 1234 5678 9012 3456 000
+Renewal of Your Optima Restore Floater Insurance Policy
+Dear Mr A B Sample ,
+Welcome to HDFC ERGO General Insurance Company Limited. We are pleased to issue you Renewal of Your Optima Restore Floater Insurance Policy.
+Certificate for the purpose of deduction under Section 80 D of Income Tax Act, 1961*
+This is to certify that the MR. A B SAMPLE has paid Rs. 23660 (Rupees Twenty-Three Thousand Six Hundred Sixty And Zero Paise Only) towards
+premium for Optima Restore Floater Policy No. 1234567890123456000 issued to MR. A B SAMPLE for period of 05/01/2023 to 04/01/2024.
+For and on behalf of HDFC ERGO General Insurance Company Limited
+HDFC ERGO General Insurance Company Limited
+1234567890123456000
+HDFC ERGO General Insurance Company Limited.  IRDAI Reg No.146
+"""
+
+
+def test_extraction_handles_hdfc_style_letter(client):
+    """Regression: spaced policy numbers, salutation names, 'has paid Rs. X'
+    premium and 'for period of A to B' dates are all recoverable."""
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], HDFC_STYLE_POLICY_TEXT,
+        name="hdfc_style.pdf",
+    ).json()
+    fields = {
+        f["field_name"]: f["value"]
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+        if f["found"]
+    }
+    assert fields["policy_number"] == "1234 5678 9012 3456 000"
+    assert fields["insurer"] == "HDFC ERGO General Insurance Company Limited"
+    assert fields["policyholder_name"] == "A B Sample"
+    assert fields["premium"] == "23660"
+    assert fields["start_date"] == "05/01/2023"
+    assert fields["expiry_date"] == "04/01/2024"
+    # Not present anywhere in the text -> must not be invented.
+    assert "sum_insured" not in fields
+    assert "nominee" not in fields
+
+
+def test_classifies_hdfc_style_letter_as_health():
+    """The insurer type is inferred from the document text itself."""
+    import asyncio
+
+    from app.ai.null_provider import NullProvider
+
+    assert asyncio.run(NullProvider().classify_document(HDFC_STYLE_POLICY_TEXT)) == "health"
+
+
 def test_extraction_handles_realistic_document_labels(client):
     """Regression: insurer headings, 'Policy No.:' and period ranges were missed."""
     user, family = _setup(client)
