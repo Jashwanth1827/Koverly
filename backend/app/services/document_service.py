@@ -53,7 +53,8 @@ async def create_document(
     detected = sniff_content_type(data, content_type)
     if detected is None or detected not in settings.allowed_upload_types:
         raise ValidationError(
-            "Unsupported file type. Allowed types: PDF, JPG, PNG."
+            "This file type isn't supported. Please upload a PDF, image, Word, "
+            "text, or scanned document."
         )
 
     if policy_id is not None:

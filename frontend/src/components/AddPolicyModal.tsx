@@ -29,8 +29,8 @@ export function AddPolicyModal({
         mode === "manual"
           ? "Add policy manually"
           : mode === "upload"
-            ? "Upload a policy copy"
-            : "Add a policy"
+            ? "Upload policy document"
+            : "Add insurance policy"
       }
       onClose={onClose}
       wide={mode !== "choose"}
@@ -38,9 +38,21 @@ export function AddPolicyModal({
       {mode === "choose" ? (
         <div className="space-y-4">
           <p className="text-sm text-ink-500">
-            How would you like to add this policy?
+            Upload your policy document and Koverly will work out the rest — no
+            need to know the type or fill in fields.
           </p>
           <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              className="card p-4 text-left transition hover:border-brand-400"
+              onClick={() => setMode("upload")}
+            >
+              <p className="font-medium text-ink-900">Upload policy document</p>
+              <p className="mt-1 text-sm text-ink-500">
+                PDF, scan, photo, Word, or text. Koverly reads it and shows you
+                what it found.
+              </p>
+            </button>
             <button
               type="button"
               className="card p-4 text-left transition hover:border-brand-400"
@@ -49,16 +61,6 @@ export function AddPolicyModal({
               <p className="font-medium text-ink-900">Add manually</p>
               <p className="mt-1 text-sm text-ink-500">
                 Enter the policy details yourself.
-              </p>
-            </button>
-            <button
-              type="button"
-              className="card p-4 text-left transition hover:border-brand-400"
-              onClick={() => setMode("upload")}
-            >
-              <p className="font-medium text-ink-900">Upload a policy copy</p>
-              <p className="mt-1 text-sm text-ink-500">
-                Upload a PDF or image and review what Koverly reads from it.
               </p>
             </button>
           </div>

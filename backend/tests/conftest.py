@@ -112,28 +112,45 @@ def make_pdf_bytes(text: str) -> bytes:
     Constructed by hand so the test suite has no PDF-generation dependency.
     Each line of ``text`` becomes a text-showing operation.
     """
-    lines = text.splitlines() or [""]
-    ops = ["BT", "/F1 12 Tf", "72 720 Td"]
-    for i, line in enumerate(lines):
-        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-        if i:
-            ops.append("0 -14 Td")
-        ops.append(f"({escaped}) Tj")
-    ops.append("ET")
-    content = "\n".join(ops).encode("latin-1", "replace")
+    return make_multipage_pdf_bytes([text])
 
+
+def make_multipage_pdf_bytes(pages: list[str]) -> bytes:
+    """Build a valid multi-page PDF, one text page per string in ``pages``."""
+    page_objects: list[bytes] = []
+    content_objects: list[bytes] = []
+
+    for text in pages:
+        lines = text.splitlines() or [""]
+        ops = ["BT", "/F1 12 Tf", "72 720 Td"]
+        for i, line in enumerate(lines):
+            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            if i:
+                ops.append("0 -14 Td")
+            ops.append(f"({escaped}) Tj")
+        ops.append("ET")
+        content = "\n".join(ops).encode("latin-1", "replace")
+        content_objects.append(
+            b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n"
+            + content + b"\nendstream"
+        )
+
+    page_count = len(pages)
+    # Object layout: 1 catalog, 2 pages, 3 font, then per page: page, contents.
+    # Page objects are 4, 6, 8...; each page's content object follows it.
     objects: list[bytes] = []
     objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
-    objects.append(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+    kids = " ".join(f"{4 + 2 * i} 0 R" for i in range(page_count))
     objects.append(
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        f"<< /Type /Pages /Kids [{kids}] /Count {page_count} >>".encode()
     )
     objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    objects.append(
-        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n"
-        + content + b"\nendstream"
-    )
+    for i in range(page_count):
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {5 + 2 * i} 0 R >>".encode()
+        )
+        objects.append(content_objects[i])
 
     out = bytearray(b"%PDF-1.4\n")
     offsets = [0]
@@ -197,3 +214,57 @@ def ocr_available() -> bool:
 def skip_without_ocr() -> None:
     if not ocr_available():
         pytest.skip("Tesseract OCR is not available in this environment")
+
+
+def make_docx_bytes(lines: list[str]) -> bytes:
+    """Build a minimal valid .docx (a ZIP with word/document.xml)."""
+    import zipfile
+
+    paragraphs = "".join(
+        f"<w:p><w:r><w:t xml:space=\"preserve\">{_xml_escape(line)}</w:t></w:r></w:p>"
+        for line in lines
+    )
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{paragraphs}</w:body></w:document>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("word/document.xml", document)
+    return buffer.getvalue()
+
+
+def make_rtf_bytes(text: str) -> bytes:
+    """Build a minimal RTF document with escaped newlines."""
+    body = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    body = body.replace("\n", "\\par\n")
+    return ("{\\rtf1\\ansi\\deff0 " + body + "}").encode("latin-1", "replace")
+
+
+def make_txt_bytes(text: str) -> bytes:
+    return text.encode("utf-8")
+
+
+def make_doc_bytes(text: str) -> bytes:
+    """A minimal OLE-ish .doc with an embedded readable text run.
+
+    Not a real Word file; it exercises the printable-run recovery path.
+    """
+    return b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64 + text.encode("latin-1")
+
+
+def _xml_escape(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )

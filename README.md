@@ -19,9 +19,11 @@ information in an emergency.
 | Dashboard | Family protection overview: active policies, annual premium, life/health cover, renewals, actions, recent claims. |
 | Family | One family group with members (self, spouse, parents, children, siblings) and roles (owner, admin, member, viewer). |
 | Policies | Life, health, motor, home, travel, personal accident, and other policies with extensible metadata. |
-| Documents | Private policy document vault (PDF/JPG/PNG) with upload, view, download, delete, and processing status. |
-| OCR | Self-hosted Tesseract reads scanned policy copies — PDFs without a text layer and JPG/PNG images — so their fields are extractable too. |
-| AI extraction | Text extraction, classification, and structured field extraction with confidence and source pages. Fields you review are the only ones applied. |
+| Documents | Private policy document vault (PDF, scan, photo, Word, text) with upload, view, download, delete, and processing status. |
+| Automatic understanding | Upload any insurance document — Koverly detects the format, reads it (OCR for scans/photos), classifies what it is, infers the insurance category/type, and shows what it found. No manual type selection. |
+| OCR | Self-hosted Tesseract reads scanned policy copies — PDFs without a text layer and JPG/PNG/WEBP images — so their fields are extractable too. |
+| AI extraction | Structured field extraction with confidence, source page, source text, and an evidence state (`explicitly_found` / `inferred` / `uncertain` / `not_found`). Fields you review are the only ones applied. |
+| Multi-policy documents | One upload can hold several policies; Koverly splits it into separate candidates, each with its own classification and page range. |
 | Ask InsuraOS | Grounded Q&A over your own policies, family, claims, and documents, with source references. |
 | Insurance Intelligence | Expiring policies, missing information, and *potential* overlaps — never stated as advice. |
 | Claims | Claim records with statuses, a timeline, and claim documents. |
@@ -67,10 +69,21 @@ app/
 
 ### Key design choices
 
-- **AI provider abstraction** — `AIProvider` with `extract_policy`, `answer_policy_question`,
+- **AI provider abstraction** — `AIProvider` with `extract_candidates` (one or more policies per
+  document), `classify_insurance`, `extract_policy`, `answer_policy_question`,
   `summarize_document`, and `analyze_coverage`. `null` is a deterministic local provider that
   performs no external calls and fabricates nothing. `openai` targets any OpenAI-compatible
   endpoint. Swapping providers is configuration, not code.
+- **Multi-format document processors** — `app/utils/text_extract.py` dispatches by detected
+  content type: PDF (pypdf + OCR fallback), images (Pillow + Tesseract), DOCX (python-docx or a
+  ZIP/XML fallback), legacy DOC (printable-run recovery), RTF, and plain text. Adding a format is
+  a new branch in one place, never a change to the pipeline.
+- **Universal, non-fixed schema** — universal fields (insurer, policy number, premium, dates, ...)
+  plus dynamic, category-specific extras (health: waiting period, TPA; motor: IDV, registration;
+  life: maturity, nominee; travel; property). Nothing is mandatory and absent fields stay absent.
+- **Taxonomy is secondary** — the user never selects a category or type. `app/ai/taxonomy.py`
+  maps inferred categories onto the persisted policy types so dashboards, emergency mode, and
+  coverage maps keep working.
 - **Private storage with signed URLs** — documents are never served publicly; access goes through
   short-lived signed URLs.
 - **Retrieval with tenant isolation** — document chunks are always filtered by `user_id`/`family_id`
@@ -87,6 +100,13 @@ app/
 ---
 
 ## Getting started
+
+### Clone
+
+```bash
+git clone https://github.com/Jashwanth1827/Koverly.git
+cd Koverly
+```
 
 ### Prerequisites
 
@@ -106,6 +126,14 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 API docs (development only): <http://localhost:8000/api/docs>
+
+For scanned copies and photos, install the OCR system packages (otherwise those
+uploads fail with a clear message rather than fabricating text):
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+```
 
 ### Frontend
 

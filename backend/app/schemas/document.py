@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +24,84 @@ class DocumentOut(BaseModel):
     page_count: int | None
     created_at: datetime
     updated_at: datetime
+
+
+class AnalysisOut(BaseModel):
+    """What Koverly determined the uploaded document to be."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    document_id: str
+    document_class: str
+    document_class_confidence: float
+    source_kind: str
+    is_insurance: bool
+    message: str | None
+    summary: str | None
+    provider: str
+    page_count: int | None
+    ocr_used: bool
+    created_at: datetime
+
+
+class CandidateFieldOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    field_name: str
+    value: str | None
+    confidence: float
+    source_page: int | None
+    source_text: str | None
+    evidence: str
+    review_status: str
+
+
+class CandidateOut(BaseModel):
+    """A policy discovered in a document, pending review."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    document_id: str
+    candidate_index: int
+    document_class: str
+    category: str
+    category_confidence: float
+    policy_type: str
+    policy_type_confidence: float
+    policy_subtype: str | None
+    policy_subtype_confidence: float
+    page_start: int | None
+    page_end: int | None
+    category_data: dict[str, Any]
+    status: str
+    policy_id: str | None
+    fields: list[CandidateFieldOut] = Field(default_factory=list)
+
+
+class AnalysisDetailOut(BaseModel):
+    """The analysis plus its candidates, ready for the review screen."""
+
+    analysis: AnalysisOut | None
+    candidates: list[CandidateOut]
+    candidate_count: int
+
+
+class CandidateConfirm(BaseModel):
+    """User review of one policy candidate.
+
+    ``confirm`` holds the values to apply (defaults to the proposed values),
+    ``reject`` lists fields the user discarded, and ``category`` lets the user
+    correct the classification if the AI got it wrong.
+    """
+
+    policy_id: str | None = None
+    member_id: str | None = None
+    category: str | None = None
+    confirm: dict[str, str] = Field(default_factory=dict)
+    reject: list[str] = Field(default_factory=list)
 
 
 class DocumentUpdate(BaseModel):

@@ -22,6 +22,7 @@ dependencies = [
     "pytesseract>=0.3.10",
     "pdf2image>=1.17.0",
     "Pillow>=10.0.0",
+    "striprtf>=0.0.26",
 ]
 
 [project.optional-dependencies]

@@ -117,6 +117,66 @@ export interface Extraction {
   created_at: string;
 }
 
+/** How a document was read: native text, OCR of a scan, or an image. */
+export type SourceKind = "text_document" | "scanned_document" | "image_document";
+
+export type Evidence =
+  | "explicitly_found"
+  | "inferred"
+  | "uncertain"
+  | "not_found";
+
+export interface DocumentAnalysis {
+  id: string;
+  document_id: string;
+  document_class: string;
+  document_class_confidence: number;
+  source_kind: SourceKind;
+  is_insurance: boolean;
+  message: string | null;
+  summary: string | null;
+  provider: string;
+  page_count: number | null;
+  ocr_used: boolean;
+  created_at: string;
+}
+
+export interface CandidateField {
+  id: string;
+  field_name: string;
+  value: string | null;
+  confidence: number;
+  source_page: number | null;
+  source_text: string | null;
+  evidence: Evidence;
+  review_status: string;
+}
+
+export interface PolicyCandidate {
+  id: string;
+  document_id: string;
+  candidate_index: number;
+  document_class: string;
+  category: string;
+  category_confidence: number;
+  policy_type: string;
+  policy_type_confidence: number;
+  policy_subtype: string | null;
+  policy_subtype_confidence: number;
+  page_start: number | null;
+  page_end: number | null;
+  category_data: Record<string, string>;
+  status: string;
+  policy_id: string | null;
+  fields: CandidateField[];
+}
+
+export interface AnalysisDetail {
+  analysis: DocumentAnalysis | null;
+  candidates: PolicyCandidate[];
+  candidate_count: number;
+}
+
 export type ClaimStatus =
   | "draft"
   | "submitted"

@@ -42,8 +42,16 @@ class Settings(BaseSettings):
     SIGNED_URL_TTL_SECONDS: int = 300
 
     # --- Uploads ----------------------------------------------------------
+    # The user never selects a type; every reasonable document format is
+    # accepted and the real type is detected from the file's content.
     MAX_UPLOAD_BYTES: int = 15 * 1024 * 1024  # 15 MB
-    ALLOWED_UPLOAD_TYPES: str = "application/pdf,image/jpeg,image/png"
+    ALLOWED_UPLOAD_TYPES: str = (
+        "application/pdf,"
+        "image/jpeg,image/png,image/webp,"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
+        "application/msword,"
+        "application/rtf,text/rtf,text/plain"
+    )
 
     # --- OCR --------------------------------------------------------------
     # Self-hosted Tesseract. When enabled, pages/images without a text layer
