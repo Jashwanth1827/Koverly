@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { documentApi, policyApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
-import { ApiError } from "@/api/client";
+import { ApiError, errorMessage, saveBlob } from "@/api/client";
 import { ConfirmButton, Modal } from "@/components/Modal";
 import { Badge, Disclaimer, EmptyState, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import { formatDate } from "@/lib/format";
@@ -16,6 +16,7 @@ export function DocumentsPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reviewDoc, setReviewDoc] = useState<Document | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<Document | null>(null);
 
   const canWrite = activeAccess?.role !== "viewer";
   if (!activeFamilyId) return null;
@@ -29,7 +30,7 @@ export function DocumentsPage() {
       setTimeout(() => docs.reload(), 800);
       setTimeout(() => docs.reload(), 2500);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not upload the document.");
+      setError(errorMessage(err, "Could not upload the document."));
     } finally {
       setUploading(false);
     }
@@ -112,8 +113,12 @@ export function DocumentsPage() {
                           <button
                             className="btn-secondary px-3 py-1 text-xs"
                             onClick={async () => {
-                              await documentApi.reprocess(activeFamilyId, d.id);
-                              docs.reload();
+                              try {
+                                await documentApi.reprocess(activeFamilyId, d.id);
+                                docs.reload();
+                              } catch (err) {
+                                setError(errorMessage(err, "Could not reprocess the document."));
+                              }
                             }}
                           >
                             Retry
@@ -121,10 +126,7 @@ export function DocumentsPage() {
                         )}
                         <button
                           className="btn-secondary px-3 py-1 text-xs"
-                          onClick={async () => {
-                            const res = await documentApi.signedUrl(activeFamilyId, d.id);
-                            window.open(res.url, "_blank", "noopener,noreferrer");
-                          }}
+                          onClick={() => setPreviewDoc(d)}
                         >
                           Open
                         </button>
@@ -132,9 +134,10 @@ export function DocumentsPage() {
                           <ConfirmButton
                             className="btn-ghost px-2 py-1 text-xs"
                             confirmLabel="Delete"
+                            busyLabel="Deleting…"
                             onConfirm={async () => {
                               await documentApi.remove(activeFamilyId, d.id);
-                              docs.reload();
+                              await docs.reload();
                             }}
                           >
                             Delete
@@ -163,7 +166,135 @@ export function DocumentsPage() {
           onDone={() => { setReviewDoc(null); docs.reload(); }}
         />
       )}
+
+      {previewDoc && (
+        <DocumentPreviewModal
+          familyId={activeFamilyId}
+          doc={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** In-app preview (PDF/image) plus download options.
+ *
+ * The uploaded file is fetched as an authenticated blob and rendered from an
+ * in-memory object URL, so it is never placed in a URL the browser stores.
+ * When the document is linked to a policy, a Koverly-generated summary PDF
+ * (built from the recorded values, not the raw upload) can be downloaded too.
+ */
+function DocumentPreviewModal({
+  familyId,
+  doc,
+  onClose,
+}: {
+  familyId: string;
+  doc: Document;
+  onClose: () => void;
+}) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const isPdf = doc.content_type === "application/pdf";
+
+  useEffect(() => {
+    let url: string | null = null;
+    let cancelled = false;
+    setBlobUrl(null);
+    setError(null);
+    documentApi
+      .previewBlob(familyId, doc.id)
+      .then((blob) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(blob);
+        setBlobUrl(url);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err, "Could not open the document."));
+      });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [familyId, doc.id, reloadKey]);
+
+  async function download() {
+    setDownloading(true);
+    try {
+      const blob = await documentApi.previewBlob(familyId, doc.id);
+      saveBlob(blob, doc.original_filename);
+    } catch (err) {
+      setError(errorMessage(err, "Could not download the document."));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function downloadSummary() {
+    if (!doc.policy_id) return;
+    setSummarizing(true);
+    try {
+      const blob = await policyApi.summaryPdfBlob(familyId, doc.policy_id);
+      saveBlob(blob, `${doc.original_filename.replace(/\.[^.]+$/, "")}-summary.pdf`);
+    } catch (err) {
+      setError(errorMessage(err, "Could not generate the summary PDF."));
+    } finally {
+      setSummarizing(false);
+    }
+  }
+
+  return (
+    <Modal title={doc.original_filename} onClose={onClose} wide>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <span className="text-xs text-ink-500">
+          {doc.document_type} · {(doc.size_bytes / 1024).toFixed(0)} KB
+        </span>
+        <div className="flex gap-2">
+          {doc.policy_id && (
+            <button
+              className="btn-secondary px-3 py-1 text-xs"
+              onClick={downloadSummary}
+              disabled={summarizing}
+            >
+              {summarizing ? "Preparing…" : "Download summary PDF"}
+            </button>
+          )}
+          <button className="btn-secondary px-3 py-1 text-xs" onClick={download} disabled={downloading}>
+            {downloading ? "Preparing…" : "Download copy"}
+          </button>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="space-y-3">
+          <ErrorState message={error} onRetry={() => setReloadKey((k) => k + 1)} />
+        </div>
+      ) : !blobUrl ? (
+        <Loading />
+      ) : isPdf ? (
+        <iframe
+          title={`Preview of ${doc.original_filename}`}
+          src={blobUrl}
+          className="h-[70vh] w-full rounded-lg border border-slate-200"
+        />
+      ) : (
+        <img
+          src={blobUrl}
+          alt={`Preview of ${doc.original_filename}`}
+          className="mx-auto max-h-[70vh] rounded-lg border border-slate-200 object-contain"
+        />
+      )}
+
+      <p className="mt-3 text-xs text-ink-300">
+        This preview is fetched over an authenticated request. The file stays in private storage and
+        is never exposed publicly. The summary PDF is generated by Koverly from the recorded values,
+        not copied from your upload.
+      </p>
+    </Modal>
   );
 }
 
@@ -210,9 +341,7 @@ function ReviewModal({
       setError(
         err instanceof ApiError && err.code === "POLICY_REQUIRED"
           ? "Select a policy to apply the confirmed fields to."
-          : err instanceof ApiError
-            ? err.message
-            : "Could not save the review.",
+          : errorMessage(err, "Could not save the review."),
       );
     } finally {
       setBusy(false);

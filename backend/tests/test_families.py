@@ -256,3 +256,53 @@ async def _storage_exists(storage, key: str) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def test_add_member_accepts_blank_optional_fields(client):
+    """Blank HTML inputs must be treated as absent, not as invalid values."""
+    user = register(client, "fam_blank@example.com", "Blank")
+    family = create_family(client, user["access_token"])
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/members",
+        json={
+            "name": "  Mother  ",
+            "relationship": "mother",
+            "date_of_birth": "",
+            "email": "",
+            "phone": "",
+            "blood_group": "",
+        },
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["name"] == "Mother"
+    assert body["date_of_birth"] is None
+    assert body["email"] is None
+
+
+def test_add_member_validation_message_names_field(client):
+    """A rejected payload must say which field failed, not just 'Invalid request.'"""
+    user = register(client, "fam_msg@example.com", "Msg")
+    family = create_family(client, user["access_token"])
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/members",
+        json={"name": "X", "relationship": "father", "blood_group": "not-a-blood-group"},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 422
+    message = resp.json()["error"]["message"]
+    assert message != "Invalid request."
+    assert "Blood group" in message
+
+
+def test_add_member_rejects_bad_email_with_clear_message(client):
+    user = register(client, "fam_email@example.com", "Email")
+    family = create_family(client, user["access_token"])
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/members",
+        json={"name": "X", "relationship": "father", "email": "not-an-email"},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 422
+    assert "email" in resp.json()["error"]["message"].lower()

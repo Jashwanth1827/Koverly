@@ -29,37 +29,62 @@ from app.utils.text import tokenize
 
 EMBEDDING_DIM = 256
 
+# A date, in the formats insurers commonly print (numeric or "12 Apr 2024").
+# Uses horizontal whitespace so a match never spans two lines.
+_DATE = (
+    r"([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}"
+    r"|[0-9]{1,2}[ \t\-][A-Za-z]{3,9}[ \t,\-]+[0-9]{4})"
+)
+# A money amount, tolerating currency symbols, thousands separators and words
+# like "lakh"/"crore". Horizontal whitespace only, so it never jumps lines.
+_MONEY = (
+    r"([0-9][0-9,]*(?:\.\d+)?(?:[ \t]*(?:lakh|lakhs|lac|lacs|crore|crores|cr|k|m|million))?)"
+)
+# A label may be separated from its value by a colon/dash or just whitespace.
+_CUR = r"(?:rs\.?|inr|\u20b9|\$)?[ \t]*"
+
 # Conservative field patterns. Each maps a canonical field name to one or more
 # label-anchored regexes. We require a label so we do not grab arbitrary
-# numbers as "premium".
+# numbers as "premium". Patterns are ordered most-specific first.
 _FIELD_PATTERNS: dict[str, list[str]] = {
     "policy_number": [
-        r"(?:policy\s*(?:no|number|#)\s*[:\-]?\s*)([A-Z0-9][A-Z0-9\-\/]{4,30})",
-        r"(?:policy\s*id\s*[:\-]?\s*)([A-Z0-9][A-Z0-9\-\/]{4,30})",
+        # "Policy No.:", "Policy No:", "Policy Number -", "Policy #"
+        rf"(?:policy\s*(?:no|number|#)\.?\s*[:\-#]?\s*)([A-Za-z0-9][A-Za-z0-9\-\/]{{3,40}})",
+        rf"(?:policy\s*id\s*[:\-]?\s*)([A-Za-z0-9][A-Za-z0-9\-\/]{{3,40}})",
     ],
     "insurer": [
-        r"(?:insurer|insurance\s+company|underwritten\s+by)\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80})",
+        r"(?:insurer|insurance\s+company|underwritten\s+by|issued\s+by)\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80})",
+        # Company-style heading, e.g. "HDFC ERGO General Insurance Company
+        # Limited". Excludes title lines that merely contain the word "policy".
+        r"^(?!.*\bpolicy\b)([A-Z][A-Za-z0-9&.,'\- ]{2,80}?(?:Insurance|Assurance)\s+(?:Company|Co\.?|Limited|Ltd\.?)[A-Za-z0-9&.,'\- ]{0,30})$",
+        r"^(?!.*\bpolicy\b)([A-Z][A-Za-z0-9&.,'\- ]{2,80}?(?:Insurance|Assurance|Life)\b[^\n]{0,40})$",
+        # Abbreviation-style insurer names, e.g. "LIC of India".
+        r"^([A-Z]{2,8}\s+of\s+[A-Z][A-Za-z]+(?:[ \t][A-Z][A-Za-z]+){0,3})$",
     ],
     "policyholder_name": [
-        r"(?:policy\s*holder|name\s+of\s+(?:the\s+)?insured|insured\s+name|proposer)\s*[:\-]\s*([A-Za-z .'\-]{3,80})",
+        r"(?:policy\s*holder(?:\s*name)?|name\s+of\s+(?:the\s+)?(?:insured|policyholder)|insured\s*name|proposer(?:\s*name)?)\s*[:\-]\s*([A-Za-z .'\-]{3,80})",
     ],
     "sum_insured": [
-        r"(?:sum\s*insured|sum\s*assured|coverage\s*amount|insured\s*amount)\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?\s*(?:lakh|lac|crore|cr|k|m|million)?)",
+        rf"(?:sum\s*insured|sum\s*assured|coverage\s*amount|insured\s*amount|idv|insured\s*declared\s*value)\s*[:\-]?\s*{_CUR}{_MONEY}",
     ],
     "premium": [
-        r"(?:premium\s*(?:amount|paid|payable)?)\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?)",
+        rf"(?:premium\s*(?:amount|paid|payable)?|total\s*premium)\s*[:\-]?\s*{_CUR}{_MONEY}",
     ],
     "premium_frequency": [
-        r"(?:premium\s*(?:frequency|mode)|payment\s*frequency|mode\s*of\s*payment)\s*[:\-]\s*([A-Za-z ]{4,20})",
+        r"(?:premium\s*(?:frequency|mode)|payment\s*(?:frequency|mode)|mode\s*of\s*payment)\s*[:\-]\s*([A-Za-z ]{4,20})",
     ],
     "start_date": [
-        r"(?:start\s*date|commencement\s*date|inception\s*date|effective\s*from|policy\s*period\s*from)\s*[:\-]?\s*([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        rf"(?:start\s*date|commencement\s*date|date\s*of\s*commencement|inception\s*date|effective\s*(?:from|date)|policy\s*period\s*(?:from|start)|period\s*of\s*insurance|insurance\s*period|risk\s*(?:start|commencement)\s*date)\s*[:\-]?\s*{_DATE}",
+        # "Policy Period: 01/04/2024 to 31/03/2025" - first date is the start.
+        rf"(?:policy\s*period|period\s*of\s*insurance|insurance\s*period)\s*[:\-]?\s*{_DATE}\s*(?:to|upto|up\s*to|-|\u2013)",
     ],
     "expiry_date": [
-        r"(?:expiry\s*date|expiration\s*date|end\s*date|valid\s*(?:up\s*)?to|policy\s*period\s*(?:to|upto|up\s*to))\s*[:\-]?\s*([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        rf"(?:expiry\s*date|expiration\s*date|end\s*date|date\s*of\s*expiry|valid\s*(?:up\s*)?to|policy\s*period\s*(?:to|upto|up\s*to)|risk\s*end\s*date)\s*[:\-]?\s*{_DATE}",
+        # "Policy Period: 01/04/2024 to 31/03/2025" - the date after "to".
+        rf"(?:policy\s*period|period\s*of\s*insurance|insurance\s*period)\s*[:\-]?\s*[0-9]{{1,4}}[\-/][0-9]{{1,2}}[\-/][0-9]{{1,4}}\s*(?:to|upto|up\s*to|-|\u2013)\s*{_DATE}",
     ],
     "renewal_date": [
-        r"(?:renewal\s*date|due\s*date|next\s*renewal)\s*[:\-]?\s*([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        rf"(?:renewal\s*date|due\s*date|next\s*renewal|renewal\s*due)\s*[:\-]?\s*{_DATE}",
     ],
     "nominee": [
         r"(?:nominee(?:\s*name)?)\s*[:\-]\s*([A-Za-z .'\-]{3,80})",
@@ -68,23 +93,23 @@ _FIELD_PATTERNS: dict[str, list[str]] = {
         r"(?:tpa|third\s*party\s*administrator)\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80})",
     ],
     "claim_contact": [
-        r"(?:claim\s*(?:contact|helpline|phone|number)|toll\s*free)\s*[:\-]?\s*([0-9][0-9\-\s]{6,20})",
+        r"(?:claim\s*(?:contact|helpline|phone|number)|toll\s*free|helpline)\s*[:\-]?\s*([0-9][0-9\-\s]{6,20})",
     ],
     "maturity_date": [
-        r"(?:maturity\s*date)\s*[:\-]?\s*([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        rf"(?:maturity\s*date|date\s*of\s*maturity)\s*[:\-]?\s*{_DATE}",
     ],
     "waiting_period": [
-        r"(?:waiting\s*period)\s*[:\-]?\s*([0-9]+\s*(?:days?|months?|years?))",
+        r"(?:waiting\s*period|pre[-\s]?existing\s*waiting\s*period)\s*[:\-]?\s*([0-9]+\s*(?:days?|months?|years?))",
     ],
     "deductible": [
-        r"(?:deductible|excess)\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?)",
+        rf"(?:deductible|excess)\s*[:\-]?\s*{_CUR}{_MONEY}",
     ],
 }
 
 _TYPE_HINTS: dict[str, list[str]] = {
     "health": ["health insurance", "mediclaim", "hospitalisation", "hospitalization", "tpa"],
-    "life": ["life insurance", "term plan", "sum assured", "maturity", "nominee"],
-    "motor": ["motor insurance", "vehicle", "car insurance", "bike", "registration number"],
+    "life": ["life insurance", "term plan", "sum assured", "maturity", "endowment", "jeevan"],
+    "motor": ["motor insurance", "vehicle", "car insurance", "private car", "package policy", "registration number", "idv", "two wheeler", "bike"],
     "home": ["home insurance", "household", "property insurance", "fire insurance"],
     "travel": ["travel insurance", "trip", "baggage", "flight delay"],
     "personal_accident": ["personal accident", "accidental death", "disability"],
@@ -217,7 +242,7 @@ def _search_with_page(
     page separators during text extraction.
     """
     for pattern in patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
+        for match in re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE):
             page = text[: match.start(1)].count("\f") + 1
             return match.group(1), page
     return None, None

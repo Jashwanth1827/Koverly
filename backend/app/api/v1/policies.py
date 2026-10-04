@@ -1,12 +1,14 @@
-"""Policy endpoints — CRUD, listing, and dashboard summary."""
+"""Policy endpoints — CRUD, listing, dashboard summary, and PDF export."""
 
 from __future__ import annotations
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import Response
 
 from app.api.deps import DbSession, FamilyContext, FamilyCtx, require_role
+from app.integrations.storage import content_disposition
 from app.models.enums import FamilyRole
 from app.schemas.common import Message, Page
 from app.schemas.policy import (
@@ -15,7 +17,8 @@ from app.schemas.policy import (
     PolicySummary,
     PolicyUpdate,
 )
-from app.services import policy_service
+from app.services import document_service, policy_service
+from app.utils.pdf import build_policy_summary_pdf
 
 router = APIRouter(prefix="/families/{family_id}/policies", tags=["policies"])
 
@@ -87,6 +90,59 @@ async def update_policy(
         db, ctx.family_id, policy_id, payload, ctx.user
     )
     return PolicyOut.model_validate(policy)
+
+
+@router.get("/{policy_id}/summary.pdf")
+async def policy_summary_pdf(
+    policy_id: str, ctx: FamilyCtx, db: DbSession
+) -> Response:
+    """Download a generated PDF summary of a single policy.
+
+    The PDF is rendered on the fly from the recorded values and linked
+    documents; it is never a raw copy of an uploaded file.
+    """
+    policy = await policy_service.get_policy(db, ctx.family_id, policy_id)
+    documents, _ = await document_service.list_documents(
+        db, ctx.family_id, policy_id=policy_id, limit=100
+    )
+    policy_dict = {
+        "policy_type": policy.policy_type,
+        "insurer": policy.insurer,
+        "policy_number": policy.policy_number,
+        "policyholder_name": policy.policyholder_name,
+        "status": policy.status,
+        "sum_insured": policy.sum_insured,
+        "premium": policy.premium,
+        "premium_frequency": policy.premium_frequency,
+        "start_date": policy.start_date,
+        "expiry_date": policy.expiry_date,
+        "renewal_date": policy.renewal_date,
+        "maturity_date": policy.maturity_date,
+        "nominee": policy.nominee,
+        "notes": policy.notes,
+        "metadata_json": policy.metadata_json,
+    }
+    pdf = build_policy_summary_pdf(
+        family_name=ctx.family.name,
+        policy=policy_dict,
+        documents=[
+            {
+                "original_filename": d.original_filename,
+                "document_type": d.document_type,
+                "status": d.status,
+            }
+            for d in documents
+        ],
+    )
+    filename = f"{policy.insurer}-{policy.policy_number}-summary.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": content_disposition("attachment", filename),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.delete("/{policy_id}", response_model=Message)
