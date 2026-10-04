@@ -87,6 +87,8 @@ export const documentApi = {
   },
   remove: (familyId: string, id: string) =>
     api.delete<{ message: string }>(`/families/${familyId}/documents/${id}`),
+  get: (familyId: string, id: string) =>
+    api.get<Document>(`/families/${familyId}/documents/${id}`),
   reprocess: (familyId: string, id: string) =>
     api.post<Document>(`/families/${familyId}/documents/${id}/reprocess`),
   extractions: (familyId: string, id: string) =>

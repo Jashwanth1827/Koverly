@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { insightApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
+import { AddPolicyModal } from "@/components/AddPolicyModal";
 import {
   Disclaimer,
   EmptyState,
@@ -24,6 +26,7 @@ import { Badge } from "@/components/ui";
 
 export function DashboardPage() {
   const { activeFamilyId } = useAuth();
+  const [showAddPolicy, setShowAddPolicy] = useState(false);
   const state = useAsync(
     () => insightApi.dashboard(activeFamilyId!),
     [activeFamilyId],
@@ -58,16 +61,11 @@ export function DashboardPage() {
         <div className="mt-6">
           <EmptyState
             title="No policies recorded yet"
-            description="Upload a policy document or add a policy manually to build your family's insurance profile."
+            description="Add a policy manually or upload a policy copy to build your family's insurance profile."
             action={
-              <div className="flex gap-3">
-                <Link to="/documents" className="btn-primary">
-                  Upload a document
-                </Link>
-                <Link to="/policies" className="btn-secondary">
-                  Add a policy
-                </Link>
-              </div>
+              <button className="btn-primary" onClick={() => setShowAddPolicy(true)}>
+                Add a policy
+              </button>
             }
           />
         </div>
@@ -173,6 +171,16 @@ export function DashboardPage() {
         {formatCurrency(d.total_life_coverage)} reflect recorded sums insured and may not match an
         insurer's settlement. Koverly does not provide financial advice.
       </Disclaimer>
+
+      {showAddPolicy && (
+        <AddPolicyModal
+          onClose={() => setShowAddPolicy(false)}
+          onSaved={() => {
+            setShowAddPolicy(false);
+            state.reload();
+          }}
+        />
+      )}
     </div>
   );
 }

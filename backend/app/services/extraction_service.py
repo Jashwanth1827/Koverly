@@ -15,10 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFoundError, ValidationError
 from app.models.document import Document, PolicyExtraction
-from app.models.enums import AuditAction, ExtractionStatus
+from app.models.enums import AuditAction, ExtractionStatus, PremiumFrequency
 from app.models.policy import Policy
 from app.models.user import User
 from app.schemas.document import ExtractionConfirm
+from app.schemas.policy import PolicyCreate
 from app.services import audit, policy_service
 
 # Extracted field name -> Policy column. Fields not listed are stored in
@@ -41,6 +42,7 @@ _METADATA_FIELDS = {
     "claim_contact",
     "premium_frequency",
 }
+_FREQUENCY_VALUES = {f.value for f in PremiumFrequency}
 
 _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y", "%d %b %Y", "%d %B %Y", "%Y/%m/%d")
 
@@ -70,16 +72,22 @@ async def confirm_extractions(
         )
     ).scalars().all()
 
+    if policy is None and payload.confirm:
+        # Nothing to attach the confirmed values to, so create the policy from
+        # exactly what the user confirmed. Rejected/absent fields stay empty
+        # rather than being filled with guesses.
+        policy = await _create_policy_from_confirmed(
+            db, family_id=family_id, actor=actor, confirm=payload.confirm
+        )
+        policy_id = policy.id
+        document.policy_id = policy.id
+
     for row in rows:
         if row.field_name in payload.reject:
             row.status = ExtractionStatus.REJECTED.value
             continue
         if row.field_name in payload.confirm:
             value = payload.confirm[row.field_name]
-            if policy is None:
-                raise ValidationError(
-                    "Link this document to a policy before confirming fields."
-                )
             _apply_to_policy(policy, row.field_name, value)
             row.value = value
             row.status = ExtractionStatus.CONFIRMED.value
@@ -114,6 +122,68 @@ async def confirm_extractions(
             )
         ).scalars().all()
     )
+
+
+async def _create_policy_from_confirmed(
+    db: AsyncSession, *, family_id: str, actor: User, confirm: dict[str, str]
+) -> Policy:
+    """Create a policy from user-confirmed extraction values.
+
+    Only the values the user confirmed are used. The policy is created through
+    the normal policy service, so audit logging and validation still apply.
+    """
+    insurer = (confirm.get("insurer") or "").strip()
+    policy_number = (confirm.get("policy_number") or "").strip()
+    if not insurer or not policy_number:
+        raise ValidationError(
+            "Confirm an insurer and policy number to create the policy, or add it manually."
+        )
+
+    metadata: dict[str, str] = {}
+    for key in _METADATA_FIELDS:
+        if key == "premium_frequency":
+            continue
+        if confirm.get(key):
+            metadata[key] = confirm[key]
+
+    payload = PolicyCreate(
+        family_id=family_id,
+        policy_type=_infer_policy_type(confirm),
+        insurer=insurer,
+        policy_number=policy_number,
+        policyholder_name=confirm.get("policyholder_name") or None,
+        sum_insured=_coerce_decimal(confirm.get("sum_insured") or ""),
+        premium=_coerce_decimal(confirm.get("premium") or ""),
+        premium_frequency=_normalize_frequency(confirm.get("premium_frequency")),
+        start_date=_coerce_date(confirm.get("start_date") or ""),
+        expiry_date=_coerce_date(confirm.get("expiry_date") or ""),
+        renewal_date=_coerce_date(confirm.get("renewal_date") or ""),
+        maturity_date=_coerce_date(confirm.get("maturity_date") or ""),
+        nominee=confirm.get("nominee") or None,
+        metadata_json=metadata,
+    )
+    return await policy_service.create_policy(db, payload, actor)
+
+
+def _infer_policy_type(confirm: dict[str, str]) -> str:
+    """Best-effort policy type from the confirmed field names.
+
+    Health indicators (TPA, waiting period) are the only case inferred from
+    metadata; everything else defaults to "other" rather than being guessed.
+    """
+    if confirm.get("tpa") or confirm.get("waiting_period") or confirm.get("claim_contact"):
+        return "health"
+    return "other"
+
+
+def _normalize_frequency(value: str | None) -> PremiumFrequency | None:
+    if not value:
+        return None
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    for candidate in PremiumFrequency:
+        if candidate.value == normalized:
+            return candidate
+    return None
 
 
 def _apply_to_policy(policy: Policy, field_name: str, value: str) -> None:

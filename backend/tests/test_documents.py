@@ -219,17 +219,64 @@ def test_confirm_extraction_preserves_unparseable_values(client):
     assert updated["metadata_json"]["expiry_date"] == "not a date"
 
 
-def test_confirm_requires_policy_link(client):
+def test_confirm_without_policy_creates_one(client):
+    """Uploading a policy copy and confirming its fields creates the policy."""
     user, family = _setup(client)
     doc = _upload(
         client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
     ).json()
     resp = client.post(
         f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
-        json={"confirm": {"policy_number": "X"}, "reject": []},
+        json={
+            "confirm": {
+                "insurer": "Acme Health Insurance",
+                "policy_number": "HLT-778899",
+                "policyholder_name": "John Doe",
+                "sum_insured": "500000",
+                "premium": "12500",
+                "start_date": "01/04/2024",
+                "expiry_date": "31/03/2025",
+            },
+            "reject": ["maturity_date"],
+        },
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+
+    listing = client.get(
+        f"/api/v1/families/{family['id']}/policies",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert listing["total"] == 1
+    policy = listing["items"][0]
+    assert policy["insurer"] == "Acme Health Insurance"
+    assert policy["policy_number"] == "HLT-778899"
+    assert float(policy["sum_insured"]) == 500000
+    assert float(policy["premium"]) == 12500
+    assert policy["start_date"] == "2024-04-01"
+    assert policy["expiry_date"] == "2025-03-31"
+
+    # The document is now linked to the policy it created.
+    linked = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert linked["policy_id"] == policy["id"]
+
+
+def test_confirm_without_policy_requires_insurer_and_number(client):
+    """A policy cannot be created from a partial confirmation."""
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
+        json={"confirm": {"policy_number": "HLT-778899"}, "reject": []},
         headers=auth_headers(user["access_token"]),
     )
     assert resp.status_code == 422
+    assert "insurer" in resp.json()["error"]["message"].lower()
 
 
 def test_document_download_requires_auth(client):
