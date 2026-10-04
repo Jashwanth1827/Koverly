@@ -263,6 +263,13 @@ def test_confirm_without_policy_creates_one(client):
     ).json()
     assert linked["policy_id"] == policy["id"]
 
+    # Extraction rows record the policy they were applied to.
+    rows = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert all(r["policy_id"] == policy["id"] for r in rows)
+
 
 def test_confirm_without_policy_requires_insurer_and_number(client):
     """A policy cannot be created from a partial confirmation."""
