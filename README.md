@@ -101,6 +101,13 @@ app/
 
 ## Getting started
 
+### Clone
+
+```bash
+git clone https://github.com/Jashwanth1827/Koverly.git
+cd Koverly
+```
+
 ### Prerequisites
 
 - Python 3.13 (3.11+ supported) with [uv](https://docs.astral.sh/uv/) or pip
@@ -119,6 +126,14 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 API docs (development only): <http://localhost:8000/api/docs>
+
+For scanned copies and photos, install the OCR system packages (otherwise those
+uploads fail with a clear message rather than fabricating text):
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+```
 
 ### Frontend
 
