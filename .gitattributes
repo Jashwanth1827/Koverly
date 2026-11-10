@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings in the working tree everywhere.
+# Docker builds copy the working copy, and a CRLF shebang makes Linux fail
+# with "env: 'bash\r': No such file or directory" (exit 127) at container
+# start. eol=lf overrides core.autocrlf on Windows checkouts.
+*.sh text eol=lf
