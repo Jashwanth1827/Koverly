@@ -1,18 +1,15 @@
 # Koverly on Render — Infrastructure as Code.
 #
 # One-click: Render Dashboard → New → Blueprint → select this repo.
-# Render reads this file, creates the Postgres database and the web service,
-# wires DATABASE_URL automatically, and generates a SECRET_KEY.
+# Render reads this file, creates the web service, and generates a SECRET_KEY.
+#
+# The database is deliberately NOT provisioned here. DATABASE_URL points at an
+# external Postgres — Supabase is the recommended option (free tier, IPv4
+# pooler, TLS). Enter it once in the Render dashboard: the `sync: false` below
+# tells Render to keep the value you set instead of clearing it on syncs.
 #
 # The web service builds the combined image (deploy/render/Dockerfile): nginx
 # serves the SPA and proxies /api to the FastAPI app on the same origin.
-
-databases:
-  - name: koverly-db
-    databaseName: koverly
-    user: koverly
-    plan: free
-    region: oregon
 
 services:
   - type: web
@@ -40,10 +37,12 @@ services:
         value: production
       - key: SECRET_KEY
         generateValue: true
+      # Set in the dashboard (service → Environment). Supabase "Session pooler"
+      # URI — IPv4, so reachable from Render — e.g.:
+      #   postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+      # The app upgrades plain postgres:// / postgresql:// to asyncpg itself.
       - key: DATABASE_URL
-        fromDatabase:
-          name: koverly-db
-          property: connectionString
+        sync: false
       - key: STORAGE_BACKEND
         value: local
       - key: STORAGE_LOCAL_ROOT

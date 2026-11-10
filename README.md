@@ -161,19 +161,41 @@ docker compose up --build
 
 ### Deploy to Render
 
-A Render Blueprint (`render.yaml`) is included. It provisions a Postgres database and a single
-web service that builds the combined production image (`deploy/render/Dockerfile`): nginx serves
-the SPA and proxies `/api` to FastAPI on the same origin (required because document signed URLs
-are relative paths).
+A Render Blueprint (`render.yaml`) is included. It creates a single web service that builds the
+combined production image (`deploy/render/Dockerfile`): nginx serves the SPA and proxies `/api`
+to FastAPI on the same origin (required because document signed URLs are relative paths).
+
+The database is **external** and not provisioned by the Blueprint — [Supabase](https://supabase.com)
+is the recommended option (free tier, IPv4 pooler, TLS). `DATABASE_URL` is a secret you set once
+in the Render dashboard.
+
+#### 1. Create the database (Supabase)
+
+1. **New project** at supabase.com; pick a region close to Render's `oregon` (e.g. **West US**).
+2. **Project Settings → Database → Connection string → Session pooler**, and copy the URI:
+   `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`
+3. Use the **Session pooler** (port `5432`), not the direct connection: newer Supabase projects
+   expose the direct host as IPv6-only, and Render has no outbound IPv6 — startup then fails with
+   `socket.gaierror`. The pooler host is IPv4. The **Transaction pooler** (port `6543`) also
+   works (the app detects it and disables prepared-statement caching), but session mode behaves
+   like a normal Postgres connection and is the default choice for a long-lived server.
+4. If the password contains URL-special characters (`@ : / # ? %`), percent-encode them
+   (`@` → `%40`) or choose a letters-and-digits password.
+
+#### 2. Deploy
 
 **One-click:** Render Dashboard → **New → Blueprint** → select this repository → **Apply**.
-Render wires `DATABASE_URL` from the database, generates `SECRET_KEY`, and deploys.
+Set `DATABASE_URL` when prompted (or later under the `koverly` service → **Environment**).
+Render generates `SECRET_KEY` and deploys; tables are created automatically on startup.
 
 **Or with the Render CLI:**
 
 ```bash
-render blueprint launch          # create the service + database from render.yaml
+render blueprint launch          # create the web service from render.yaml
+# then set DATABASE_URL for the service in the dashboard
 ```
+
+Verify: `https://<service>.onrender.com/health` → `{"status":"ok","app":"Koverly"}`.
 
 Build and run the exact production image locally:
 
@@ -186,7 +208,10 @@ docker run -p 8080:8080 -e SECRET_KEY=dev-secret -e DATABASE_URL="sqlite+aiosqli
 Notes:
 
 - The container binds nginx to the platform-provided `$PORT`; the API runs internally on `:8000`.
-- `postgres://` / `postgresql://` URLs from Render are rewritten to `postgresql+asyncpg://`.
+- `postgres://` / `postgresql://` URLs are rewritten to `postgresql+asyncpg://`, and libpq-only
+  query parameters (`sslmode`, `pgbouncer`, `connection_limit`) are dropped automatically.
+- Supabase free projects pause after ~7 days without activity; restore the project from the
+  Supabase dashboard if the site has been idle that long.
 - `CORS_ORIGINS` defaults to `RENDER_EXTERNAL_URL` when set.
 - Local storage (`STORAGE_LOCAL_ROOT`) is used by default. Render's disk is ephemeral on the free
   plan — attach a persistent disk at `/app/storage`, or configure S3, for durable documents.
@@ -203,7 +228,7 @@ All secrets come from environment variables — nothing sensitive is committed. 
 | Variable | Purpose |
 | --- | --- |
 | `SECRET_KEY` | JWT signing key. **Required in production.** |
-| `DATABASE_URL` | SQLite by default; PostgreSQL via `postgresql+asyncpg://…` in production. |
+| `DATABASE_URL` | SQLite by default; PostgreSQL via `postgresql+asyncpg://…` in production (a Supabase session-pooler URI works as-is). |
 | `STORAGE_BACKEND` | `local` or `s3`. |
 | `SIGNED_URL_TTL_SECONDS` | Lifetime of document access URLs. |
 | `OCR_ENABLED` | `true`/`false` — self-hosted Tesseract OCR for scanned copies. |
