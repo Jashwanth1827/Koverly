@@ -11,13 +11,13 @@ Never fabricates data: fields that cannot be found are stored with
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.factory import get_ai_provider
-from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.document import Document, DocumentChunk, PolicyExtraction
 from app.models.enums import DocumentStatus, DocumentType, ExtractionStatus
@@ -79,7 +79,7 @@ async def process_document(document_id: str) -> None:
                 "document_processing_failed",
                 extra={"extra_fields": {"document_id": document_id, "reason": str(exc)}},
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             await db.rollback()
             document = await db.get(Document, document_id)
             if document is not None:
@@ -96,7 +96,11 @@ async def _run_pipeline(db: AsyncSession, document: Document) -> None:
     from app.integrations.storage import get_storage
 
     data = await get_storage().get(document.storage_key)
-    text, page_count = extract_text(data, document.content_type)
+    # Text extraction (including OCR) is CPU-bound: keep the event loop free
+    # so uploads and other API calls stay responsive.
+    text, page_count = await asyncio.to_thread(
+        extract_text, data, document.content_type
+    )
     document.page_count = page_count
     document.extracted_text = text[:200000]
     await db.flush()

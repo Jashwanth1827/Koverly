@@ -29,6 +29,21 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 day
     ALGORITHM: str = "HS256"
 
+    # --- Auth security ----------------------------------------------------
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    REFRESH_TOKEN_ROTATE: bool = True
+    EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS: int = 24
+    PASSWORD_RESET_TOKEN_EXPIRE_HOURS: int = 1
+    # Account lockout: lock after N failed logins for M minutes.
+    LOGIN_MAX_ATTEMPTS: int = 5
+    LOGIN_LOCKOUT_MINUTES: int = 15
+    # Track failed logins per IP as well.
+    LOGIN_MAX_ATTEMPTS_IP: int = 20
+    # Set AUTH_COOKIE_SECURE=true behind HTTPS.
+    AUTH_COOKIE_SECURE: bool = False
+    AUTH_COOKIE_SAMESITE: str = "lax"  # strict | lax | none
+    AUTH_COOKIE_DOMAIN: str = ""
+
     # --- Database ---------------------------------------------------------
     # SQLite+aiosqlite by default for zero-dependency local runs.
     # Production should set e.g. postgresql+asyncpg://user:pass@host/db
@@ -43,7 +58,29 @@ class Settings(BaseSettings):
 
     # --- Uploads ----------------------------------------------------------
     MAX_UPLOAD_BYTES: int = 15 * 1024 * 1024  # 15 MB
-    ALLOWED_UPLOAD_TYPES: str = "application/pdf,image/jpeg,image/png"
+    ALLOWED_UPLOAD_TYPES: str = (
+        "application/pdf,"
+        "image/jpeg,"
+        "image/png,"
+        "application/vnd.openxmlformats-officedocument"
+        ".wordprocessingml.document,"
+        "application/vnd.openxmlformats-officedocument"
+        ".spreadsheetml.sheet,"
+        "application/vnd.ms-excel,"
+        "text/csv,"
+        "text/markdown,"
+        "text/plain"
+    )
+
+    # --- OCR --------------------------------------------------------------
+    # "auto" uses the bundled RapidOCR engine when the ``ocr`` extra is
+    # installed, "rapidocr" requires it, and "none" disables OCR entirely.
+    # Scanned PDF pages and photos are only read when an engine is available.
+    OCR_BACKEND: str = "auto"  # auto | rapidocr | none
+    OCR_MIN_TEXT_CHARS: int = 30  # PDF pages below this are treated as scans
+    OCR_MIN_CONFIDENCE: float = 0.3
+    OCR_PDF_DPI: int = 200
+    OCR_MAX_PAGES: int = 200
 
     # --- AI ---------------------------------------------------------------
     # Provider abstraction: "null" (deterministic local, no external calls),
@@ -62,7 +99,20 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
+    # Sender address. Falls back to SMTP_USER when empty.
+    SMTP_FROM: str = ""
+    SMTP_USE_TLS: bool = True
+    SMTP_USE_SSL: bool = False
+    SMTP_TIMEOUT_SECONDS: int = 15
     NOTIFICATION_WEBHOOK_URL: str = ""
+
+    # --- Reminder scheduler ------------------------------------------------
+    # In-process scheduler for single-instance deployments. For multiple
+    # workers, disable this and call POST /api/v1/system/run-reminders from an
+    # external cron using SCHEDULER_TOKEN.
+    REMINDER_SCHEDULER_ENABLED: bool = True
+    REMINDER_CHECK_INTERVAL_MINUTES: int = 15
+    SCHEDULER_TOKEN: str = ""
 
     # --- CORS -------------------------------------------------------------
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"

@@ -4,6 +4,7 @@ import { documentApi, familyApi } from "@/api/endpoints";
 import { ApiError } from "@/api/client";
 import { useAuth } from "@/context/AuthContext";
 import { StatusBadge } from "@/components/ui";
+import { ACCEPTED_UPLOAD_TYPES } from "@/lib/format";
 import type { Document } from "@/api/types";
 
 const STEPS = ["Create family", "Add members", "Upload documents"];
@@ -160,8 +161,8 @@ function OnboardingUpload({
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Upload insurance documents</h1>
         <p className="mt-1 text-sm text-ink-500">
-          Upload a policy PDF or a photo. Koverly extracts the key details for you to review before
-          anything is applied to a policy.
+          Upload a policy document or a photo — PDF, Word, Excel, CSV, Markdown, or plain text.
+          Koverly extracts the key details for you to review before anything is applied to a policy.
         </p>
       </div>
 
@@ -170,7 +171,7 @@ function OnboardingUpload({
         <input
           type="file"
           className="sr-only"
-          accept="application/pdf,image/jpeg,image/png"
+          accept={ACCEPTED_UPLOAD_TYPES}
           disabled={uploading}
           onChange={(e) => {
             const f = e.target.files?.[0];

@@ -82,6 +82,8 @@ export const documentApi = {
     const qs = new URLSearchParams(params).toString();
     return api.upload<Document>(`/families/${familyId}/documents${qs ? `?${qs}` : ""}`, file);
   },
+  get: (familyId: string, id: string) =>
+    api.get<Document>(`/families/${familyId}/documents/${id}`),
   remove: (familyId: string, id: string) =>
     api.delete<{ message: string }>(`/families/${familyId}/documents/${id}`),
   reprocess: (familyId: string, id: string) =>
@@ -91,7 +93,13 @@ export const documentApi = {
   confirm: (
     familyId: string,
     id: string,
-    body: { policy_id?: string; confirm: Record<string, string>; reject: string[] },
+    body: {
+      policy_id?: string;
+      create_policy?: boolean;
+      policy_type?: string;
+      confirm: Record<string, string>;
+      reject: string[];
+    },
   ) => api.post<Extraction[]>(`/families/${familyId}/documents/${id}/extractions/confirm`, body),
   signedUrl: (familyId: string, id: string) =>
     api.post<{ url: string; expires_in: number }>(

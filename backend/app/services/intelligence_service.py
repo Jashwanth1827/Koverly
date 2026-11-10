@@ -7,7 +7,7 @@ All findings are derived from recorded data. Overlaps are phrased as
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -208,7 +208,7 @@ async def generate(
 
     return IntelligenceResponse(
         family_id=family_id,
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         items=items,
     )
 

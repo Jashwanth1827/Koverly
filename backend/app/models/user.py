@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, String
+from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDMixin
@@ -18,8 +18,16 @@ class User(Base, UUIDMixin, TimestampMixin):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    # Reserved for future email verification; not enforced in v1.
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Brute-force / account-lockout tracking.
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_failed_login_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    locked_until: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     memberships = relationship(
         "FamilyMember", back_populates="user", cascade="all, delete-orphan"

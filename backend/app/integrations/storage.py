@@ -21,7 +21,6 @@ import os
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import BinaryIO
 
 from app.core.config import settings
 from app.core.errors import AppError
@@ -100,9 +99,10 @@ class LocalStorage(StorageBackend):
 class S3Storage(StorageBackend):
     """Private S3-compatible storage.
 
-    A real implementation should use ``aioboto3``/``boto3`` with presigned
-    URLs and server-side encryption. Until configured this backend refuses to
-    operate rather than falling back to something insecure.
+    Uses boto3 when available. It only works against a private bucket and
+    generates short-lived presigned GET URLs. Writes are performed server-
+    side over TLS. If boto3 is not installed or required settings are missing,
+    the backend fails loudly rather than silently storing data insecurely.
     """
 
     def __init__(self) -> None:
@@ -110,22 +110,74 @@ class S3Storage(StorageBackend):
             raise StorageError(
                 "S3 storage selected but STORAGE_S3_BUCKET is not configured."
             )
+        try:
+            import boto3
+        except ImportError as exc:  # pragma: no cover - environment dependent
+            raise StorageError(
+                "boto3 is required for S3 storage. Install with: pip install boto3"
+            ) from exc
+
         self.bucket = settings.STORAGE_S3_BUCKET
+        self.region = settings.STORAGE_S3_REGION or None
+        session = boto3.session.Session(region_name=self.region)
+        self.client = session.client("s3")
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
-        raise StorageError("S3 backend is not implemented in this build.")
+        import asyncio
+
+        def _put() -> None:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=data,
+                ContentType=content_type,
+                ServerSideEncryption="AES256",
+            )
+
+        try:
+            await asyncio.to_thread(_put)
+        except Exception as exc:
+            raise StorageError("Failed to upload document to S3.") from exc
 
     async def get(self, key: str) -> bytes:
-        raise StorageError("S3 backend is not implemented in this build.")
+        import asyncio
+
+        def _get() -> bytes:
+            resp = self.client.get_object(Bucket=self.bucket, Key=key)
+            body = resp["Body"]
+            return body.read()
+
+        try:
+            return await asyncio.to_thread(_get)
+        except Exception as exc:
+            raise StorageError("Document file is missing from storage.") from exc
 
     async def delete(self, key: str) -> None:
-        raise StorageError("S3 backend is not implemented in this build.")
+        import asyncio
+
+        def _delete() -> None:
+            self.client.delete_object(Bucket=self.bucket, Key=key)
+
+        try:
+            await asyncio.to_thread(_delete)
+        except Exception:
+            # Deletion failures must not block the API response.
+            return
 
     def signed_url(self, key: str, ttl_seconds: int | None = None) -> str:
-        raise StorageError("S3 backend is not implemented in this build.")
+        try:
+            return self.client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": key},
+                ExpiresIn=ttl_seconds or settings.SIGNED_URL_TTL_SECONDS,
+            )
+        except Exception as exc:
+            raise StorageError("Failed to generate storage URL.") from exc
 
     def verify_signed_url(self, key: str, expires: int, signature: str) -> bool:
-        return False
+        # S3 presigned URLs carry their own signature and expiry; verification
+        # is handled by S3. The local signed-URL scheme does not apply here.
+        return True
 
 
 _storage: StorageBackend | None = None
@@ -152,6 +204,34 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+# Declared content types that carry no reliable magic bytes. They are only
+# accepted when the client declares them and the payload looks like text, so a
+# renamed binary cannot slip through.
+_TEXT_CONTENT_TYPES: dict[str, tuple[str, ...]] = {
+    "text/markdown": (".md", ".markdown"),
+    "text/csv": (".csv",),
+    "text/plain": (".txt", ".text"),
+}
+
+
+def _looks_like_text(data: bytes) -> bool:
+    """Heuristic: reject obvious binaries, accept decodable text.
+
+    A NUL byte is a strong binary signal. UTF-8/UTF-16 decoding with a
+    tolerance for a few malformed bytes avoids false negatives on accented
+    policy text.
+    """
+    if b"\x00" in data[:8192] and not data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return False
+    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
+        try:
+            data.decode(encoding)
+            return True
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return False
+
+
 def sniff_content_type(data: bytes, declared: str) -> str | None:
     """Validate magic bytes against the declared content type.
 
@@ -164,4 +244,22 @@ def sniff_content_type(data: bytes, declared: str) -> str | None:
         return "image/jpeg"
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
+    if data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        # OLE2 compound file: legacy .doc, .xls (and .ppt).
+        return "application/vnd.ms-excel"
+    if data.startswith(b"PK\x03\x04") or data.startswith(b"PK\x05\x06"):
+        # ZIP container: OOXML documents share the same signature, so the
+        # declared type disambiguates Word from Excel.
+        normalized = declared.split(";")[0].strip().lower()
+        if normalized in {
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        }:
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    if declared.lower() in _TEXT_CONTENT_TYPES and _looks_like_text(data):
+        return declared.split(";")[0].strip().lower()
     return None

@@ -1,5 +1,11 @@
 """Model package — imports register all tables on the metadata."""
 
+from app.models.auth_token import (
+    EmailVerificationToken,
+    LoginAttempt,
+    PasswordResetToken,
+    RefreshToken,
+)
 from app.models.claim import (
     AuditLog,
     Claim,
@@ -10,6 +16,7 @@ from app.models.claim import (
 )
 from app.models.document import Document, DocumentChunk, PolicyExtraction
 from app.models.enums import (
+    ROLE_RANK,
     AuditAction,
     ClaimStatus,
     DocumentStatus,
@@ -22,7 +29,6 @@ from app.models.enums import (
     Relationship,
     ReminderStatus,
     ReminderType,
-    ROLE_RANK,
     SubscriptionPlan,
     SubscriptionStatus,
 )
@@ -31,6 +37,7 @@ from app.models.policy import Policy
 from app.models.user import User
 
 __all__ = [
+    "ROLE_RANK",
     "AuditAction",
     "AuditLog",
     "Claim",
@@ -40,21 +47,24 @@ __all__ = [
     "DocumentChunk",
     "DocumentStatus",
     "DocumentType",
+    "EmailVerificationToken",
     "EmergencyShare",
     "ExtractionStatus",
     "Family",
     "FamilyMember",
     "FamilyRole",
+    "LoginAttempt",
+    "PasswordResetToken",
     "Policy",
     "PolicyExtraction",
     "PolicyStatus",
     "PolicyType",
     "PremiumFrequency",
+    "RefreshToken",
     "Relationship",
     "Reminder",
     "ReminderStatus",
     "ReminderType",
-    "ROLE_RANK",
     "Subscription",
     "SubscriptionPlan",
     "SubscriptionStatus",

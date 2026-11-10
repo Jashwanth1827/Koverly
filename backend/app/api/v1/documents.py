@@ -15,7 +15,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile
 from fastapi.responses import Response
 
 from app.api.deps import (
-    CurrentUser,
     DbSession,
     FamilyContext,
     FamilyCtx,

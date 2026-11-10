@@ -19,8 +19,8 @@ information in an emergency.
 | Dashboard | Family protection overview: active policies, annual premium, life/health cover, renewals, actions, recent claims. |
 | Family | One family group with members (self, spouse, parents, children, siblings) and roles (owner, admin, member, viewer). |
 | Policies | Life, health, motor, home, travel, personal accident, and other policies with extensible metadata. |
-| Documents | Private policy document vault (PDF/JPG/PNG) with upload, view, download, delete, and processing status. |
-| AI extraction | Text extraction, classification, and structured field extraction with confidence and source pages. Fields you review are the only ones applied. |
+| Documents | Private policy document vault (PDF, JPG/PNG, DOCX, XLSX/XLS, CSV, MD, TXT) with upload, view, download, delete, and processing status. |
+| AI extraction | Text extraction across PDF, images, Word, Excel, CSV, Markdown, and text (including offline OCR for photos and scanned PDF pages), classification, and structured field extraction with confidence and source pages. Fields you review are the only ones applied. |
 | Ask InsuraOS | Grounded Q&A over your own policies, family, claims, and documents, with source references. |
 | Insurance Intelligence | Expiring policies, missing information, and *potential* overlaps — never stated as advice. |
 | Claims | Claim records with statuses, a timeline, and claim documents. |
@@ -96,7 +96,7 @@ cd backend
 cp .env.example .env
 # Set SECRET_KEY (generate with: python -c "import secrets;print(secrets.token_urlsafe(48))")
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"   # or: pip install -e ".[dev]"
+uv pip install -e ".[dev,ocr]"   # omit ",ocr" to run without OCR
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -139,6 +139,7 @@ All secrets come from environment variables — nothing sensitive is committed. 
 | `DATABASE_URL` | SQLite by default; PostgreSQL via `postgresql+asyncpg://…` in production. |
 | `STORAGE_BACKEND` | `local` or `s3`. |
 | `SIGNED_URL_TTL_SECONDS` | Lifetime of document access URLs. |
+| `OCR_BACKEND` | `auto` (default), `rapidocr`, or `none`. Offline OCR for images and scanned PDF pages. |
 | `AI_PROVIDER` | `null` (default, offline, no fabrication) or `openai`. |
 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | External model credentials and endpoint. |
 | `NOTIFICATION_BACKEND` | `noop` or `webhook`. |
@@ -164,6 +165,9 @@ All secrets come from environment variables — nothing sensitive is committed. 
 
 - Local and test environments create tables via `init_models`; production should use Alembic
   migrations (a migration toolchain is intentionally not added yet to avoid premature dependencies).
+- OCR is optional (`.[ocr]`). Without it, images and scanned PDFs fail with an explicit
+  reason rather than producing empty text. The default engine (RapidOCR/ONNX) is CPU-only,
+  so large scanned documents take longer to process.
 - Billing records a plan preference only; no payment processor is connected.
 - Email/WhatsApp ingestion and insurer integrations are extension points, not implemented.
 

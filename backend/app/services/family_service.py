@@ -7,7 +7,12 @@ import logging
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
+from app.core.errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
 from app.integrations.storage import get_storage
 from app.models.document import Document
 from app.models.enums import AuditAction, FamilyRole, Relationship
@@ -119,7 +124,7 @@ async def delete_family(db: AsyncSession, family: Family, actor: User) -> None:
     for key in keys:
         try:
             await storage.delete(key)
-        except Exception:  # noqa: BLE001 - rows already gone; log and continue
+        except Exception:
             logger.exception("family_delete_storage_purge_failed key=%s", key)
 
 

@@ -4,21 +4,17 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.errors import NotFoundError, ValidationError
 from app.core.security import new_share_token
 from app.models.claim import Claim, EmergencyShare, Reminder, Subscription
 from app.models.document import Document
 from app.models.enums import (
     AuditAction,
-    ClaimStatus,
-    DocumentStatus,
     PolicyStatus,
     SubscriptionPlan,
 )
@@ -491,7 +487,7 @@ async def emergency_profile(
     return EmergencyProfile(
         family_id=family.id,
         family_name=family.name,
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         member=(
             FamilyMemberEmergency(
                 id=selected.id,
@@ -527,7 +523,7 @@ async def create_emergency_share(
         created_by_user_id=actor.id,
         token=new_share_token(),
         member_id=member_id,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes),
+        expires_at=datetime.now(UTC) + timedelta(minutes=ttl_minutes),
         max_views=max_views,
     )
     db.add(share)
@@ -552,7 +548,7 @@ async def revoke_emergency_share(
     share = await db.get(EmergencyShare, share_id)
     if share is None or share.family_id != family.id:
         raise NotFoundError("Share link not found.")
-    share.revoked_at = datetime.now(timezone.utc)
+    share.revoked_at = datetime.now(UTC)
     await db.flush()
     await audit.record(
         db,
@@ -577,10 +573,10 @@ async def resolve_emergency_share(
     ).scalar_one_or_none()
     if share is None:
         raise NotFoundError("This link is not valid.")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires = share.expires_at
     if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
+        expires = expires.replace(tzinfo=UTC)
     if share.revoked_at is not None:
         raise NotFoundError("This link has been revoked.")
     if expires < now:

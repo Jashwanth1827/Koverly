@@ -53,7 +53,8 @@ async def create_document(
     detected = sniff_content_type(data, content_type)
     if detected is None or detected not in settings.allowed_upload_types:
         raise ValidationError(
-            "Unsupported file type. Allowed types: PDF, JPG, PNG."
+            "Unsupported file type. Allowed types: PDF, JPG, PNG, DOCX, "
+            "XLSX/XLS, CSV, MD, TXT."
         )
 
     if policy_id is not None:
@@ -184,7 +185,7 @@ async def delete_document(
     await db.commit()
     try:
         await get_storage().delete(key)
-    except Exception:  # noqa: BLE001 - DB record already gone; log and continue
+    except Exception:
         logger.exception("document_storage_delete_failed key=%s", key)
 
 

@@ -49,6 +49,37 @@ class TokenResponse(BaseModel):
     user: UserOut
 
 
+class AuthTokensResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: UserOut
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+class EmailRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=1)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+    @field_validator("password")
+    @classmethod
+    def _password_strength(cls, v: str) -> str:
+        if v.strip() != v:
+            raise ValueError("Password must not begin or end with whitespace.")
+        if v.isdigit() or v.isalpha():
+            raise ValueError(
+                "Password must contain at least two character classes."
+            )
+        return v
+
+
 class UserUpdate(BaseModel):
     full_name: str | None = Field(default=None, min_length=1, max_length=200)
     phone: str | None = Field(default=None, max_length=32)

@@ -12,6 +12,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import RequestTimer, configure_logging, log_event
+from app.core.scheduler import start_scheduler, stop_scheduler
 from app.db.session import init_models
 
 logger = logging.getLogger("koverly")
@@ -28,7 +29,9 @@ async def lifespan(_: FastAPI):
         ai_provider=settings.AI_PROVIDER,
         storage_backend=settings.STORAGE_BACKEND,
     )
+    start_scheduler()
     yield
+    await stop_scheduler()
     log_event(logger, "app_stopped")
 
 
@@ -56,7 +59,7 @@ def create_app() -> FastAPI:
         timer = RequestTimer()
         try:
             response = await call_next(request)
-        except Exception:  # noqa: BLE001 - handled by exception handlers
+        except Exception:
             log_event(
                 logger,
                 "request_error",

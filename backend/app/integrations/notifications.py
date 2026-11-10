@@ -8,9 +8,12 @@ so no channel is faked as working.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import smtplib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from email.message import EmailMessage as MimeMessage
 
 from app.core.config import settings
 
@@ -49,6 +52,56 @@ class NoopNotificationBackend(NotificationBackend):
         return False
 
 
+class SmtpNotificationBackend(NotificationBackend):
+    """SMTP delivery using the standard library.
+
+    The blocking ``smtplib`` call runs in a worker thread so the reminder loop
+    and API requests are never blocked by a slow mail server.
+    """
+
+    name = "smtp"
+
+    def __init__(self) -> None:
+        self.host = settings.SMTP_HOST
+        self.port = settings.SMTP_PORT
+        self.username = settings.SMTP_USER
+        self.password = settings.SMTP_PASSWORD
+        self.from_addr = settings.SMTP_FROM or settings.SMTP_USER
+        self.use_tls = settings.SMTP_USE_TLS
+        self.use_ssl = settings.SMTP_USE_SSL
+        self.timeout = settings.SMTP_TIMEOUT_SECONDS
+
+    async def send(self, message: NotificationMessage) -> bool:
+        return await asyncio.to_thread(self._send_sync, message)
+
+    def _send_sync(self, message: NotificationMessage) -> bool:
+        if not self.host or not self.from_addr:
+            logger.error("notification_smtp_not_configured")
+            return False
+        mime = MimeMessage()
+        mime["From"] = self.from_addr
+        mime["To"] = message.recipient
+        mime["Subject"] = message.subject
+        mime.set_content(message.body)
+        try:
+            if self.use_ssl:
+                client: smtplib.SMTP = smtplib.SMTP_SSL(
+                    self.host, self.port, timeout=self.timeout
+                )
+            else:
+                client = smtplib.SMTP(self.host, self.port, timeout=self.timeout)
+            with client:
+                if self.use_tls and not self.use_ssl:
+                    client.starttls()
+                if self.username:
+                    client.login(self.username, self.password)
+                client.send_message(mime)
+            return True
+        except Exception:
+            logger.exception("notification_smtp_failed")
+            return False
+
+
 class WebhookNotificationBackend(NotificationBackend):
     name = "webhook"
 
@@ -70,7 +123,7 @@ class WebhookNotificationBackend(NotificationBackend):
                     },
                 )
                 return resp.status_code < 400
-        except Exception:  # noqa: BLE001 - never crash reminder flow
+        except Exception:
             logger.exception("notification_webhook_failed")
             return False
 
@@ -81,8 +134,15 @@ _backend: NotificationBackend | None = None
 def get_notification_backend() -> NotificationBackend:
     global _backend
     if _backend is None:
-        if settings.NOTIFICATION_BACKEND == "webhook" and settings.NOTIFICATION_WEBHOOK_URL:
+        backend = settings.NOTIFICATION_BACKEND.strip().lower()
+        if backend == "smtp" and settings.SMTP_HOST:
+            _backend = SmtpNotificationBackend()
+        elif backend == "webhook" and settings.NOTIFICATION_WEBHOOK_URL:
             _backend = WebhookNotificationBackend(settings.NOTIFICATION_WEBHOOK_URL)
         else:
+            if backend in {"smtp", "webhook"}:
+                logger.warning("notification_backend_misconfigured", extra={
+                    "extra_fields": {"backend": backend}
+                })
             _backend = NoopNotificationBackend()
     return _backend

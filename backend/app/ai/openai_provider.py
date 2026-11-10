@@ -18,13 +18,16 @@ import logging
 import httpx
 
 from app.ai.base import (
+    NOT_FOUND_MESSAGE,
     AIProvider,
     AnswerResult,
     ExtractedField,
-    NOT_FOUND_MESSAGE,
     SourceRef,
 )
-from app.ai.null_provider import NullProvider, _FIELD_PATTERNS, _search_with_page, _normalize
+from app.ai.null_provider import (
+    _FIELD_PATTERNS,
+    NullProvider,
+)
 from app.core.config import settings
 
 logger = logging.getLogger("koverly.ai.openai")
@@ -94,7 +97,7 @@ class OpenAICompatibleProvider(AIProvider):
             )
             word = out.strip().lower().split()[0]
             return word if word in {"policy", "claim", "other"} else "other"
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("classify_failed")
             return await self._fallback.classify_document(text)
 
@@ -138,7 +141,7 @@ class OpenAICompatibleProvider(AIProvider):
                         )
                     )
             return results
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("extraction_failed_fallback")
             return await self._fallback.extract_policy(text)
 
@@ -171,7 +174,7 @@ class OpenAICompatibleProvider(AIProvider):
                 grounded=grounded,
                 provider=self.name,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("answer_failed_fallback")
             return await self._fallback.answer_question(question, contexts)
 
@@ -182,7 +185,7 @@ class OpenAICompatibleProvider(AIProvider):
                 "Do not add information that is not present.",
                 text[:15000],
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("summarize_failed_fallback")
             return await self._fallback.summarize_document(text)
 
@@ -201,7 +204,7 @@ class OpenAICompatibleProvider(AIProvider):
                 resp.raise_for_status()
                 data = resp.json()
             return [item["embedding"] for item in data["data"]]
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("embed_failed_fallback")
             return await self._fallback.embed(texts)
 
@@ -218,6 +221,6 @@ class OpenAICompatibleProvider(AIProvider):
             if isinstance(parsed, list):
                 return [str(x) for x in parsed]
             return [str(x) for x in parsed.get("observations", [])]
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("coverage_analysis_failed")
             return []

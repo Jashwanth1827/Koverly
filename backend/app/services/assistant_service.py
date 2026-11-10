@@ -13,13 +13,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.base import NOT_FOUND_MESSAGE, AnswerResult, RecordMatch, SourceRef
+from app.ai.base import NOT_FOUND_MESSAGE, AnswerResult, RecordMatch
 from app.ai.factory import get_ai_provider
 from app.models.claim import Claim
 from app.models.enums import ClaimStatus, PolicyStatus, PolicyType

@@ -13,7 +13,7 @@ from sqlalchemy import JSON, Date, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDMixin
-from app.models.enums import PolicyStatus, PolicyType, PremiumFrequency
+from app.models.enums import PolicyStatus, PolicyType
 
 
 class Policy(Base, UUIDMixin, TimestampMixin):

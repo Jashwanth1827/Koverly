@@ -327,4 +327,6 @@ export interface PublicConfig {
   storage_backend: string;
   max_upload_mb: number;
   allowed_upload_types: string[];
+  ocr_backend: "rapidocr" | "none" | "unavailable";
+  ocr_available: boolean;
 }

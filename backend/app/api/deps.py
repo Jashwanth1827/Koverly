@@ -26,7 +26,7 @@ from app.core.errors import AuthenticationError, PermissionDeniedError
 from app.core.rate_limit import rate_limiter
 from app.core.security import decode_token
 from app.db.session import get_db
-from app.models.enums import FamilyRole, ROLE_RANK
+from app.models.enums import ROLE_RANK, FamilyRole
 from app.models.family import Family, FamilyMember
 from app.models.user import User
 

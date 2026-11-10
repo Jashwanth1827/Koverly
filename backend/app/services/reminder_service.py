@@ -6,7 +6,7 @@ hardcoded into business logic.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from app.core.errors import NotFoundError, ValidationError
 from app.integrations.notifications import NotificationMessage, get_notification_backend
 from app.models.claim import Reminder
 from app.models.enums import ReminderStatus, ReminderType
+from app.models.family import FamilyMember
 from app.models.user import User
 from app.schemas.claim import ReminderCreate, ReminderUpdate
 
@@ -115,7 +116,7 @@ async def acknowledge(
 ) -> Reminder:
     reminder = await get_reminder(db, family_id, reminder_id)
     reminder.status = ReminderStatus.ACKNOWLEDGED.value
-    reminder.acknowledged_at = datetime.now(timezone.utc)
+    reminder.acknowledged_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(reminder)
     return reminder
@@ -126,26 +127,62 @@ async def complete(
 ) -> Reminder:
     reminder = await get_reminder(db, family_id, reminder_id)
     reminder.status = ReminderStatus.COMPLETED.value
-    reminder.completed_at = datetime.now(timezone.utc)
+    reminder.completed_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(reminder)
     return reminder
 
 
-async def run_due_reminders(db: AsyncSession) -> int:
-    """Mark reminders triggered/sent when within their offset window.
+async def _reminder_recipients(db: AsyncSession, reminder: Reminder) -> list[str]:
+    """Resolve real email addresses for a reminder.
 
-    Intended to be invoked by a scheduler. Returns the number dispatched.
+    The member who created the reminder is always included, followed by any
+    family members with an email on file. Falls back to the family id so the
+    noop backend still records a dispatch target when no address exists.
+    """
+    emails: list[str] = []
+
+    creator = await db.get(User, reminder.created_by_user_id)
+    if creator and creator.email:
+        emails.append(creator.email)
+
+    rows = await db.execute(
+        select(FamilyMember.email).where(
+            FamilyMember.family_id == reminder.family_id,
+            FamilyMember.email.is_not(None),
+        )
+    )
+    for (email,) in rows.all():
+        if email:
+            emails.append(email)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for email in emails:
+        normalized = email.strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(email.strip())
+    return deduped or [reminder.family_id]
+
+
+async def run_due_reminders(db: AsyncSession) -> int:
+    """Send reminders whose due date falls in one of their offset windows.
+
+    Intended to be invoked by the in-process scheduler or an external cron
+    job. Returns the number of reminders dispatched. Each reminder fires at
+    most once per day.
     """
     today = date.today()
     backend = get_notification_backend()
+    max_offset = 365
     rows = await db.execute(
         select(Reminder).where(
             Reminder.status.in_(
                 [ReminderStatus.SCHEDULED.value, ReminderStatus.TRIGGERED.value]
             ),
             Reminder.due_date >= today,
-            Reminder.due_date <= today + timedelta(days=30),
+            Reminder.due_date <= today + timedelta(days=max_offset),
         )
     )
     dispatched = 0
@@ -153,17 +190,35 @@ async def run_due_reminders(db: AsyncSession) -> int:
         days_until = (reminder.due_date - today).days
         if days_until not in (reminder.offsets or []):
             continue
-        sent = await backend.send(
-            NotificationMessage(
-                recipient=reminder.family_id,
-                subject=reminder.title,
-                body=f"Reminder: {reminder.title} due {reminder.due_date.isoformat()} "
-                f"({days_until} day(s)).",
-            )
+        # Do not send the same reminder again on the same day, even if the
+        # scheduler runs more frequently than daily.
+        last = reminder.last_triggered_at
+        if last is not None:
+            last_date = last.date() if last.tzinfo is None else last.astimezone(
+                UTC
+            ).date()
+            if last_date == today:
+                continue
+
+        recipients = await _reminder_recipients(db, reminder)
+        body = (
+            f"Reminder: {reminder.title} due {reminder.due_date.isoformat()} "
+            f"({days_until} day(s))."
         )
-        reminder.last_triggered_at = datetime.now(timezone.utc)
+        results = [
+            await backend.send(
+                NotificationMessage(
+                    recipient=recipient,
+                    subject=reminder.title,
+                    body=body,
+                )
+            )
+            for recipient in recipients
+        ]
+        delivered = bool(results) and all(results)
+        reminder.last_triggered_at = datetime.now(UTC)
         reminder.status = (
-            ReminderStatus.SENT.value if sent else ReminderStatus.TRIGGERED.value
+            ReminderStatus.SENT.value if delivered else ReminderStatus.TRIGGERED.value
         )
         dispatched += 1
     await db.commit()

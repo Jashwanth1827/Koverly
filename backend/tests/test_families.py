@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.integrations.storage import get_storage
 from tests.conftest import (
     auth_headers,
     create_family,
@@ -9,8 +10,6 @@ from tests.conftest import (
     make_pdf_bytes,
     register,
 )
-
-from app.integrations.storage import get_storage
 
 
 def test_create_family_adds_owner_member(client):

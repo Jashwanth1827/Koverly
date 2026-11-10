@@ -19,16 +19,22 @@ os.environ["STORAGE_BACKEND"] = "local"
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["AI_PROVIDER"] = "null"
 os.environ["NOTIFICATION_BACKEND"] = "noop"
+os.environ["REMINDER_SCHEDULER_ENABLED"] = "false"
+os.environ["SCHEDULER_TOKEN"] = "test-scheduler-token"
 os.environ["RATE_LIMIT_PER_MINUTE"] = "100000"
+os.environ["AUTH_COOKIE_SECURE"] = "false"
+os.environ["AUTH_COOKIE_SAMESITE"] = "lax"
+os.environ["LOGIN_MAX_ATTEMPTS"] = "5"
+os.environ["LOGIN_LOCKOUT_MINUTES"] = "15"
 os.environ["MAX_UPLOAD_BYTES"] = str(5 * 1024 * 1024)
 
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
+import pytest
+from fastapi.testclient import TestClient
 
-from app.core.rate_limit import rate_limiter  # noqa: E402
-from app.db.base import Base  # noqa: E402
-from app.db.session import engine  # noqa: E402
-from app.main import app  # noqa: E402
+from app.core.rate_limit import rate_limiter
+from app.db.base import Base
+from app.db.session import engine
+from app.main import app
 
 
 @pytest.fixture(autouse=True)

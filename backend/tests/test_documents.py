@@ -113,6 +113,30 @@ def test_extraction_produces_fields_with_provenance(client):
     assert fields["maturity_date"]["value"] is None
 
 
+def test_extraction_tolerates_ocr_missing_label_punctuation(client):
+    """OCR often turns ':' into '.' or drops it; labels must still match."""
+    user, family = _setup(client)
+    text = (
+        "Health Insurance Policy\n"
+        "Policy Number HLT-112233\n"
+        "Insurer Acme Health Insurance\n"
+        "Nominee John Doe\n"
+        "Waiting Period 24 months\n"
+    )
+    doc = _upload(client, user["access_token"], family["id"], text).json()
+    fields = {
+        f["field_name"]: f
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+    }
+    assert fields["policy_number"]["value"] == "HLT-112233"
+    assert fields["insurer"]["value"].startswith("Acme Health")
+    assert fields["nominee"]["value"] == "John Doe"
+    assert fields["waiting_period"]["value"] == "24 months"
+
+
 def test_confirm_extraction_applies_to_policy(client):
     user, family = _setup(client)
     policy = create_policy(
@@ -217,6 +241,105 @@ def test_confirm_extraction_preserves_unparseable_values(client):
     # The raw text is retained in metadata rather than discarded.
     assert updated["metadata_json"]["sum_insured"] == "as per schedule"
     assert updated["metadata_json"]["expiry_date"] == "not a date"
+
+
+def test_confirm_creates_policy_from_extraction(client):
+    """A reviewed document with no linked policy can create one on submit."""
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
+        json={
+            "create_policy": True,
+            "confirm": {
+                "insurer": "Acme Health Insurance",
+                "policy_number": "HLT-778899",
+                "sum_insured": "500000",
+                "premium": "12500",
+                "start_date": "01/04/2024",
+                "expiry_date": "31/03/2025",
+                "nominee": "John Doe",
+            },
+            "reject": [],
+        },
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert all(row["policy_id"] for row in rows if row["status"] == "confirmed")
+
+    policies = client.get(
+        f"/api/v1/families/{family['id']}/policies",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert policies["total"] == 1
+    policy = policies["items"][0]
+    assert policy["policy_number"] == "HLT-778899"
+    assert policy["insurer"] == "Acme Health Insurance"
+    assert policy["policy_type"] == "health"
+    assert float(policy["premium"]) == 12500
+    assert policy["start_date"] == "2024-04-01"
+
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert detail["policy_id"] == policy["id"]
+
+
+def test_confirm_reuses_policy_with_same_number_and_insurer(client):
+    user, family = _setup(client)
+    existing = create_policy(
+        client,
+        user["access_token"],
+        family["id"],
+        insurer="Acme Health Insurance",
+        policy_number="HLT-778899",
+        premium="1",
+    )
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
+        json={
+            "create_policy": True,
+            "confirm": {
+                "insurer": "Acme Health Insurance",
+                "policy_number": "HLT-778899",
+                "premium": "12500",
+            },
+            "reject": [],
+        },
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+
+    policies = client.get(
+        f"/api/v1/families/{family['id']}/policies",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert policies["total"] == 1
+    assert policies["items"][0]["id"] == existing["id"]
+    assert float(policies["items"][0]["premium"]) == 12500
+
+
+def test_confirm_create_requires_insurer_and_policy_number(client):
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
+        json={"create_policy": True, "confirm": {"nominee": "John Doe"}, "reject": []},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 422
+    assert "insurer" in resp.text
 
 
 def test_confirm_requires_policy_link(client):

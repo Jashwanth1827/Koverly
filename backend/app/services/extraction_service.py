@@ -7,19 +7,24 @@ and marks proposals as confirmed/rejected.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.factory import get_ai_provider
 from app.core.errors import NotFoundError, ValidationError
 from app.models.document import Document, PolicyExtraction
-from app.models.enums import AuditAction, ExtractionStatus
+from app.models.enums import AuditAction, ExtractionStatus, PolicyType
 from app.models.policy import Policy
 from app.models.user import User
 from app.schemas.document import ExtractionConfirm
+from app.schemas.policy import PolicyCreate
 from app.services import audit, policy_service
+
+logger = logging.getLogger("koverly.extraction")
 
 # Extracted field name -> Policy column. Fields not listed are stored in
 # metadata_json (e.g. tpa, waiting_period, deductible).
@@ -62,6 +67,28 @@ async def confirm_extractions(
     if policy_id:
         policy = await policy_service.get_policy(db, family_id, policy_id)
 
+    confirmed_values = {
+        name: value for name, value in payload.confirm.items() if value.strip()
+    }
+
+    created_policy = False
+    if policy is None and payload.create_policy and confirmed_values:
+        policy, created_policy = await _create_policy_from_confirmed(
+            db,
+            family_id=family_id,
+            document=document,
+            payload=payload,
+            values=confirmed_values,
+            actor=actor,
+        )
+        policy_id = policy.id
+        document.policy_id = policy.id
+
+    if policy is None and confirmed_values:
+        raise ValidationError(
+            "Choose an existing policy or create a new one before submitting."
+        )
+
     rows = (
         await db.execute(
             select(PolicyExtraction).where(
@@ -76,12 +103,18 @@ async def confirm_extractions(
             continue
         if row.field_name in payload.confirm:
             value = payload.confirm[row.field_name]
-            if policy is None:
+            # An empty value means the user cleared/ignored the field.
+            if not value.strip():
+                row.status = ExtractionStatus.REJECTED.value
+                continue
+            if policy is None:  # pragma: no cover - guarded above
                 raise ValidationError(
-                    "Link this document to a policy before confirming fields."
+                    "Choose an existing policy or create a new one before "
+                    "submitting."
                 )
             _apply_to_policy(policy, row.field_name, value)
             row.value = value
+            row.policy_id = policy.id
             row.status = ExtractionStatus.CONFIRMED.value
             row.confidence = 1.0
 
@@ -99,9 +132,10 @@ async def confirm_extractions(
         actor_user_id=actor.id,
         family_id=family_id,
         metadata={
-            "confirmed": sorted(payload.confirm.keys()),
+            "confirmed": sorted(confirmed_values.keys()),
             "rejected": payload.reject,
             "policy_id": policy_id,
+            "created_policy": created_policy,
         },
     )
     await db.commit()
@@ -114,6 +148,100 @@ async def confirm_extractions(
             )
         ).scalars().all()
     )
+
+
+async def _infer_policy_type(document: Document) -> PolicyType:
+    """Best-effort classification from the document text.
+
+    Falls back to ``other`` when the provider cannot classify; the type is
+    only a convenience and never overrides a user's explicit choice.
+    """
+    text = (document.extracted_text or "")[:40000]
+    if not text.strip():
+        return PolicyType.OTHER
+    try:
+        predicted = await get_ai_provider().classify_document(text)
+        return PolicyType(predicted)
+    except Exception:  # noqa: BLE001 - classification is optional
+        logger.warning("policy_type_inference_failed document_id=%s", document.id)
+        return PolicyType.OTHER
+
+
+async def _create_policy_from_confirmed(
+    db: AsyncSession,
+    *,
+    family_id: str,
+    document: Document,
+    payload: ExtractionConfirm,
+    values: dict[str, str],
+    actor: User,
+) -> tuple[Policy, bool]:
+    """Create a policy from reviewed extraction values.
+
+    A policy with the same number and insurer is reused instead of creating a
+    duplicate. The caller then applies the confirmed values to it. Returns the
+    policy and whether it was newly created.
+    """
+    insurer = values.get("insurer", "").strip()
+    policy_number = values.get("policy_number", "").strip()
+    missing = []
+    if not insurer:
+        missing.append("insurer")
+    if not policy_number:
+        missing.append("policy number")
+    if missing:
+        raise ValidationError(
+            f"Enter the {' and '.join(missing)} before creating a policy."
+        )
+
+    existing = (
+        await db.execute(
+            select(Policy).where(
+                Policy.family_id == family_id,
+                func.lower(Policy.policy_number) == policy_number.lower(),
+                func.lower(Policy.insurer) == insurer.lower(),
+            )
+        )
+    ).scalars().first()
+    if existing is not None:
+        logger.info(
+            "extraction_matched_existing_policy",
+            extra={"extra_fields": {"policy_id": existing.id}},
+        )
+        return existing, False
+
+    policy_type = payload.policy_type or await _infer_policy_type(document)
+    metadata: dict[str, str] = {}
+    columns: dict[str, object] = {}
+    for name, value in values.items():
+        if name in {"insurer", "policy_number"}:
+            continue
+        if name in _COLUMN_MAP:
+            columns[_COLUMN_MAP[name]] = value
+        elif name in _NUMERIC_FIELDS:
+            coerced = _coerce_decimal(value)
+            if coerced is not None:
+                columns[name] = coerced
+            else:
+                metadata[name] = value
+        elif name in _DATE_FIELDS:
+            coerced_date = _coerce_date(value)
+            if coerced_date is not None:
+                columns[name] = coerced_date
+            else:
+                metadata[name] = value
+        else:
+            metadata[name] = value
+
+    create = PolicyCreate(
+        family_id=family_id,
+        policy_type=policy_type,
+        insurer=insurer,
+        policy_number=policy_number,
+        metadata_json=metadata,
+        **columns,
+    )
+    return await policy_service.create_policy(db, create, actor), True
 
 
 def _apply_to_policy(policy: Policy, field_name: str, value: str) -> None:

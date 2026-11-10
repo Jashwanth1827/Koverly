@@ -29,7 +29,7 @@ def get_ai_provider() -> AIProvider:
             _provider = OpenAICompatibleProvider()
             logger.info("ai_provider_selected provider=%s", _provider.name)
             return _provider
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception(
                 "ai_provider_init_failed falling back to null provider"
             )

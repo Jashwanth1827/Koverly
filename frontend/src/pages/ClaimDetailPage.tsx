@@ -5,7 +5,7 @@ import { claimApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
 import { ApiError } from "@/api/client";
 import { Disclaimer, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
-import { claimStatusLabel, formatDate, formatPremium } from "@/lib/format";
+import { ACCEPTED_UPLOAD_TYPES, claimStatusLabel, formatDate, formatPremium } from "@/lib/format";
 import type { ClaimStatus } from "@/api/types";
 
 const NEXT_STATUSES: Record<string, ClaimStatus[]> = {
@@ -114,7 +114,7 @@ export function ClaimDetailPage() {
                 <input
                   type="file"
                   className="sr-only"
-                  accept="application/pdf,image/jpeg,image/png"
+                  accept={ACCEPTED_UPLOAD_TYPES}
                   disabled={uploading}
                   onChange={(e) => {
                     const f = e.target.files?.[0];

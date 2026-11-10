@@ -20,6 +20,7 @@ from app.models.enums import FamilyRole, SubscriptionPlan
 from app.schemas.claim import (
     AuditLogOut,
     CalendarEvent,
+    CoverageMap,
     DashboardOut,
     EmergencyProfile,
     EmergencyShareCreate,
@@ -33,7 +34,6 @@ from app.schemas.claim import (
     SubscriptionUpdate,
 )
 from app.schemas.common import Message, Page
-from app.schemas.claim import CoverageMap
 from app.schemas.document import AskRequest, AskResponse
 from app.services import (
     assistant_service,
@@ -41,6 +41,7 @@ from app.services import (
     misc_service,
     reminder_service,
 )
+from app.utils.ocr import is_ocr_available, ocr_backend_name
 
 router = APIRouter(tags=["insights"])
 
@@ -349,4 +350,6 @@ async def get_public_config() -> dict:
         "storage_backend": settings.STORAGE_BACKEND,
         "max_upload_mb": settings.MAX_UPLOAD_BYTES // (1024 * 1024),
         "allowed_upload_types": settings.allowed_upload_types,
+        "ocr_backend": ocr_backend_name(),
+        "ocr_available": is_ocr_available(),
     }

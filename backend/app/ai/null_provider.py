@@ -19,10 +19,10 @@ import re
 from collections import Counter
 
 from app.ai.base import (
+    NOT_FOUND_MESSAGE,
     AIProvider,
     AnswerResult,
     ExtractedField,
-    NOT_FOUND_MESSAGE,
     SourceRef,
 )
 from app.utils.text import tokenize
@@ -32,54 +32,107 @@ EMBEDDING_DIM = 256
 # Conservative field patterns. Each maps a canonical field name to one or more
 # label-anchored regexes. We require a label so we do not grab arbitrary
 # numbers as "premium".
+_DATE = (
+    r"(?:[0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}"
+    r"|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})"
+)
+
+# Labels are anchored to the start of a line so wording such as
+# "Welcome to ... Insurance Company Limited" is not mistaken for a label.
+# Patterns tolerate the value being on the next line, which is common in
+# table-based policy schedules extracted from PDFs.
 _FIELD_PATTERNS: dict[str, list[str]] = {
     "policy_number": [
-        r"(?:policy\s*(?:no|number|#)\s*[:\-]?\s*)([A-Z0-9][A-Z0-9\-\/]{4,30})",
-        r"(?:policy\s*id\s*[:\-]?\s*)([A-Z0-9][A-Z0-9\-\/]{4,30})",
+        r"(?im)^[ \t]*(?:policy\s*(?:no|number|#)\.?|policy\s*id)\s*[:\-.]?\s*"
+        r"([A-Z0-9][A-Z0-9\-/ ]{3,39}[A-Z0-9])[ \t]*$",
+        r"(?i)(?:policy\s*(?:no|number|#)\.?)\s*[:\-.]?[ \t]*"
+        r"([A-Z0-9][A-Z0-9\-/ ]{3,39}[A-Z0-9])",
     ],
     "insurer": [
-        r"(?:insurer|insurance\s+company|underwritten\s+by)\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80})",
+        r"(?im)^[ \t]*(?:insurer|underwritten\s+by)\s*[:\-.]?\s*"
+        r"([A-Za-z0-9 .,&'\-]{3,80})[ \t]*$",
+        r"(?im)^[ \t]*insurance\s+company\s*[:\-.]?\s*"
+        r"([A-Za-z0-9 .,&'\-]{3,80})[ \t]*$",
     ],
     "policyholder_name": [
-        r"(?:policy\s*holder|name\s+of\s+(?:the\s+)?insured|insured\s+name|proposer)\s*[:\-]\s*([A-Za-z .'\-]{3,80})",
+        r"(?im)^[ \t]*(?:policy\s*holder(?:['\u2019]?s)?(?:\s*name)?|name\s+of\s+(?:the\s+)?insured"
+        r"|insured\s+name|proposer)(?!\s*(?:state|address|gender))\s*[:\-.]?\s*"
+        r"([A-Za-z .'\-]{3,80})[ \t]*$",
     ],
     "sum_insured": [
-        r"(?:sum\s*insured|sum\s*assured|coverage\s*amount|insured\s*amount)\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?\s*(?:lakh|lac|crore|cr|k|m|million)?)",
+        r"(?im)^[ \t]*total\s+sum\s+insured(?:\s*\([^)]*\))?\s*[:\-.]?\s*"
+        r"(?:rs\.?|inr|₹|\$)?\s*"
+        r"([0-9][0-9,]*(?:\.\d+)?\s*(?:lakh|lac|crore|cr|k|m|million)?)[ \t]*$",
+        r"(?im)^[ \t]*(?:base\s+)?sum\s+(?:insured|assured)(?:\s*\([^)]*\))?\s*[:\-.]?\s*"
+        r"(?:rs\.?|inr|₹|\$)?\s*"
+        r"([0-9][0-9,]*(?:\.\d+)?\s*(?:lakh|lac|crore|cr|k|m|million)?)[ \t]*$",
+        r"(?i)(?:sum\s*insured|sum\s*assured|coverage\s*amount|insured\s*amount)\s*[:\-]?[ \t]*"
+        r"(?:rs\.?|inr|₹|\$)?[ \t]*"
+        r"([0-9][0-9,]*(?:\.\d+)?\s*(?:lakh|lac|crore|cr|k|m|million)?)",
     ],
     "premium": [
-        r"(?:premium\s*(?:amount|paid|payable)?)\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?)",
+        r"(?im)^[ \t]*gross\s+premium(?:\s*\([^)]*\))?\s*[:\-.]?\s*"
+        r"(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?)[ \t]*$",
+        r"(?im)^[ \t]*premium\s*(?:amount|paid|payable)?\s*[:\-.]?\s*"
+        r"(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?)[ \t]*$",
     ],
     "premium_frequency": [
-        r"(?:premium\s*(?:frequency|mode)|payment\s*frequency|mode\s*of\s*payment)\s*[:\-]\s*([A-Za-z ]{4,20})",
+        r"(?im)^[ \t]*(?:premium\s*(?:frequency|mode)|payment\s*frequency|mode\s*of\s*payment)"
+        r"\s*[:\-.]?\s*([A-Za-z ]{4,20})[ \t]*$",
     ],
     "start_date": [
-        r"(?:start\s*date|commencement\s*date|inception\s*date|effective\s*from|policy\s*period\s*from)\s*[:\-]?\s*([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        rf"(?i)(?:policy\s+)?period\s+(?:of\s+)?(?:from\s+)?({_DATE})",
+        rf"(?im)^[ \t]*(?:start\s*date|commencement\s*date|date\s+of\s+commencement"
+        rf"|risk\s*commencement\s*date|effective\s+from|policy\s*period\s*from)"
+        rf"\s*[:\-]?\s*({_DATE})[ \t]*$",
     ],
     "expiry_date": [
-        r"(?:expiry\s*date|expiration\s*date|end\s*date|valid\s*(?:up\s*)?to|policy\s*period\s*(?:to|upto|up\s*to))\s*[:\-]?\s*([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        rf"(?i)(?:policy\s+)?period\s+(?:of\s+)?{_DATE}\s+(?:to|till|upto|up\s+to)\s+({_DATE})",
+        rf"(?im)^[ \t]*(?:expiry\s*date|expiration\s*date|end\s*date|valid\s*(?:up\s*)?to"
+        rf"|policy\s*period\s*(?:to|upto|up\s*to))\s*[:\-]?\s*({_DATE})[ \t]*$",
     ],
     "renewal_date": [
-        r"(?:renewal\s*date|due\s*date|next\s*renewal)\s*[:\-]?\s*([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        rf"(?im)^[ \t]*(?:renewal\s*date|due\s*date|next\s*renewal)\s*[:\-]?\s*"
+        rf"({_DATE})[ \t]*$",
     ],
     "nominee": [
-        r"(?:nominee(?:\s*name)?)\s*[:\-]\s*([A-Za-z .'\-]{3,80})",
+        r"(?im)^[ \t]*nominee(?:\s*name)?(?!\s*details\b)\s*[:\-.]?\s*"
+        r"([A-Za-z .'\-]{3,80})[ \t]*$",
     ],
     "tpa": [
-        r"(?:tpa|third\s*party\s*administrator)\s*[:\-]\s*([A-Za-z0-9 .,&'\-]{3,80})",
+        r"(?im)^[ \t]*(?:tpa|third\s*party\s*administrator|claim\s*administrator)"
+        r"\s*[:\-.]?\s*([A-Za-z0-9 .,&'\-]{3,80})[ \t]*$",
     ],
     "claim_contact": [
-        r"(?:claim\s*(?:contact|helpline|phone|number)|toll\s*free)\s*[:\-]?\s*([0-9][0-9\-\s]{6,20})",
+        r"(?im)^[ \t]*(?:claim\s*(?:contact|helpline|phone|number)|toll\s*free)"
+        r"\s*[:\-.]?\s*([0-9][0-9\-\s]{6,20})[ \t]*$",
     ],
     "maturity_date": [
-        r"(?:maturity\s*date)\s*[:\-]?\s*([0-9]{1,4}[\-/][0-9]{1,2}[\-/][0-9]{1,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{4})",
+        rf"(?im)^[ \t]*(?:maturity\s*date|date\s+of\s+maturity)\s*[:\-]?\s*"
+        rf"({_DATE})[ \t]*$",
     ],
     "waiting_period": [
-        r"(?:waiting\s*period)\s*[:\-]?\s*([0-9]+\s*(?:days?|months?|years?))",
+        r"(?im)^[ \t]*waiting\s*period\s*[:\-.]?\s*"
+        r"([0-9]+\s*(?:days?|months?|years?))[ \t]*$",
     ],
     "deductible": [
-        r"(?:deductible|excess)\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?)",
+        r"(?im)^[ \t]*(?:deductible|excess)\s*[:\-.]?\s*"
+        r"(?:rs\.?|inr|₹|\$)?\s*([0-9][0-9,]*(?:\.\d+)?)[ \t]*$",
     ],
 }
+
+_COMPANY_NAME = re.compile(
+    r"([A-Z][A-Za-z0-9&.'-]*(?:[ \t]+[A-Z][A-Za-z0-9&.'-]*){0,4}[ \t]+"
+    r"(?:General[ \t]+)?(?:Insurance|Assurance)[ \t]+(?:Company|Co\.?|Corporation)"
+    r"(?:[ \t]+(?:Limited|Ltd\.?))?)"
+)
+# Insurers written as "<X> Insurance Corporation of <Country>", e.g. the
+# Life Insurance Corporation of India, and the bare LIC full name.
+_COMPANY_CORPORATION = re.compile(
+    r"([A-Z][A-Za-z0-9&.'-]*(?:[ \t]+[A-Z][A-Za-z0-9&.'-]*){0,3}[ \t]+"
+    r"(?:Insurance|Assurance|INSURANCE|ASSURANCE)[ \t]+"
+    r"(?:Corporation|CORPORATION)[ \t]+(?:of|OF)[ \t]+[A-Za-z]+)"
+)
 
 _TYPE_HINTS: dict[str, list[str]] = {
     "health": ["health insurance", "mediclaim", "hospitalisation", "hospitalization", "tpa"],
@@ -95,6 +148,49 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+|\n+")
 
 def _normalize(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text)
+
+
+# Markdown/table decorations that would otherwise sit between a label and its
+# value. Front-ends (docs, wikis) commonly emit ``**Insurer:** Acme`` or
+# spreadsheet-style ``Insurer | Acme`` rows.
+_MD_EMPHASIS = re.compile(r"[*_`~]{1,3}")
+_LIST_BULLET = re.compile(r"(?m)^[ \t]*[-+>]\s+")
+# Qualifiers insurers add after a label, e.g. ``Premium (in INR)`` or
+# ``Sum Insured (Rs.)``. They sit between the label and the separator.
+_LABEL_QUALIFIER = re.compile(r"[ \t]*\([^)]{0,40}\)")
+
+
+def _clean_layout(text: str) -> str:
+    """Strip markup so label/value pairs match regardless of source format.
+
+    Handles Markdown emphasis and headings, table pipes and commas used as
+    cell separators, list bullets, and parenthetical label qualifiers such as
+    ``Premium (in INR):``. Line structure is preserved because the field
+    patterns are line-anchored.
+    """
+    cleaned_lines: list[str] = []
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        line = _MD_EMPHASIS.sub("", raw).strip()
+        line = re.sub(r"^#+\s*", "", line)
+        if _LIST_BULLET.match(line):
+            line = _LIST_BULLET.sub("", line)
+        # A table or CSV row joins cells with ``|`` or ``,``; turn the first
+        # separator into a ``:`` so the standard ``Label: value`` rule applies.
+        if "|" in line and ":" not in line.split("|", 1)[0]:
+            line = line.replace("|", ":", 1)
+        elif "," in line and ":" not in line.split(",", 1)[0]:
+            head = line.split(",", 1)[0]
+            if re.fullmatch(r"[A-Za-z][A-Za-z /#.'-]*", head.strip()):
+                line = line.replace(",", ":", 1)
+        # Drop a qualifier that sits between the label and its separator.
+        head, sep, tail = line.partition(":")
+        if sep:
+            head = _LABEL_QUALIFIER.sub("", head).strip()
+            line = f"{head}{sep}{tail}"
+        elif not any(ch.isdigit() for ch in line):
+            line = _LABEL_QUALIFIER.sub("", line).strip()
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -125,11 +221,25 @@ class NullProvider(AIProvider):
         return best
 
     async def extract_policy(self, text: str) -> list[ExtractedField]:
+        # Normalise markup (Markdown, tables, CSV) once so every pattern sees a
+        # consistent ``Label: value`` layout.
+        text = _clean_layout(text)
         fields: list[ExtractedField] = []
         for name, patterns in _FIELD_PATTERNS.items():
             match, page = _search_with_page(text, patterns)
+            if not match and name == "insurer":
+                company = _COMPANY_NAME.search(text) or _COMPANY_CORPORATION.search(
+                    text
+                )
+                if company:
+                    match = company.group(1)
+                    page = text[: company.start(1)].count("\f") + 1
             if match:
                 value = _normalize(match.strip())
+                if name == "policy_number":
+                    value = re.sub(r"\s+", "", value)
+                elif name in {"insurer", "policyholder_name", "nominee", "tpa"}:
+                    value = value.rstrip(" .,")
                 fields.append(
                     ExtractedField(
                         field_name=name,

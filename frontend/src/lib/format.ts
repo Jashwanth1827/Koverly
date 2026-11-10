@@ -1,5 +1,16 @@
 /* Formatting and presentation helpers. */
 
+// File types the document vault can extract text from. Kept in sync with the
+// backend `ALLOWED_UPLOAD_TYPES` setting.
+export const ACCEPTED_UPLOAD_TYPES =
+  "application/pdf,image/jpeg,image/png," +
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet," +
+  "application/vnd.ms-excel,text/csv,text/markdown,text/plain,.docx,.xlsx," +
+  ".xls,.csv,.md,.txt,.pdf,.jpg,.jpeg,.png";
+
+export const ACCEPTED_FORMATS_LABEL = "PDF, JPG, PNG, DOCX, XLSX/XLS, CSV, MD, TXT";
+
 export function formatCurrency(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "—";
   const n = typeof value === "string" ? Number(value) : value;

@@ -17,7 +17,8 @@ from __future__ import annotations
 from datetime import date
 
 from sqlalchemy import Date, ForeignKey, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship as orm_relationship
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import relationship as orm_relationship
 
 from app.db.base import Base, TimestampMixin, UUIDMixin
 from app.models.enums import FamilyRole, Relationship

@@ -40,6 +40,90 @@ def test_null_provider_never_invents_missing_field():
     assert by_name["tpa"].found is False
 
 
+def test_null_provider_reads_table_style_policy_schedule():
+    provider = NullProvider()
+    text = """Policy Number
+1234 5678 9012 3456 789
+Policy Holder\u2019s Name
+Test Holder
+Example General Insurance Company Limited.
+Total Sum Insured (`)
+1000000
+Gross Premium
+24500
+for period of 10/03/2023 to 09/03/2024.
+Nominee Name : Test Nominee
+"""
+    by_name = {f.field_name: f for f in asyncio.run(provider.extract_policy(text))}
+    assert by_name["policy_number"].value == "1234567890123456789"
+    assert by_name["policyholder_name"].value == "Test Holder"
+    assert by_name["insurer"].value == "Example General Insurance Company Limited"
+    assert by_name["sum_insured"].value == "1000000"
+    assert by_name["premium"].value == "24500"
+    assert by_name["start_date"].value == "10/03/2023"
+    assert by_name["expiry_date"].value == "09/03/2024"
+    assert by_name["nominee"].value == "Test Nominee"
+
+
+def test_null_provider_finds_mixed_case_insurer_from_prose():
+    """Insurer fallback must match mixed-case names, not only ALL-CAPS ones."""
+    provider = NullProvider()
+    text = "Welcome to Acme Health Insurance Company Limited. Your coverage follows."
+    by_name = {f.field_name: f for f in asyncio.run(provider.extract_policy(text))}
+    assert by_name["insurer"].value == "Acme Health Insurance Company Limited"
+
+
+def test_null_provider_does_not_treat_prose_as_insurer_label():
+    provider = NullProvider()
+    text = "We are pleased to issue you Insurance Company details as requested."
+    by_name = {f.field_name: f for f in asyncio.run(provider.extract_policy(text))}
+    assert by_name["insurer"].found is False
+
+
+def test_null_provider_reads_lic_life_insurance_corporation():
+    """LIC schedules use 'Corporation of India' and 'Date of ...' labels."""
+    provider = NullProvider()
+    text = """LIFE INSURANCE CORPORATION OF INDIA
+Policy Schedule - Endowment Plan (Table 14-14)
+Policy No.: 1234567890
+Policy Holder: MR RAHUL SHARMA
+Date of Commencement: 15/06/2015
+Date of Maturity: 15/06/2035
+Sum Assured: 1000000
+Premium Frequency: yearly
+Nominee Name : MRS SUNITA SHARMA
+Premium: 42150
+"""
+    by_name = {f.field_name: f for f in asyncio.run(provider.extract_policy(text))}
+    assert by_name["insurer"].value == "LIFE INSURANCE CORPORATION OF INDIA"
+    assert by_name["policy_number"].value == "1234567890"
+    assert by_name["policyholder_name"].value == "MR RAHUL SHARMA"
+    assert by_name["start_date"].value == "15/06/2015"
+    assert by_name["maturity_date"].value == "15/06/2035"
+    assert by_name["sum_insured"].value == "1000000"
+    assert by_name["premium"].value == "42150"
+
+
+def test_null_provider_handles_parenthetical_premium_labels():
+    """SBI-style labels such as 'Premium (in INR):' must still match."""
+    provider = NullProvider()
+    text = """SBI Life Insurance Company Limited
+Policy Number: 1K1234567
+Policy Holder Name: PRIYA NAIR
+Commencement Date: 01/04/2020
+Premium (in INR): 96000
+Sum Assured (in INR): 5000000
+Nominee Name : ARJUN NAIR
+"""
+    by_name = {f.field_name: f for f in asyncio.run(provider.extract_policy(text))}
+    assert by_name["insurer"].value == "SBI Life Insurance Company Limited"
+    assert by_name["policyholder_name"].value == "PRIYA NAIR"
+    assert by_name["start_date"].value == "01/04/2020"
+    assert by_name["premium"].value == "96000"
+    assert by_name["sum_insured"].value == "5000000"
+    assert by_name["nominee"].value == "ARJUN NAIR"
+
+
 def test_assistant_answers_from_structured_records(client):
     user, family = _setup(client)
     create_policy(

@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.enums import PolicyType
+
 
 class DocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -53,11 +55,16 @@ class ExtractionOut(BaseModel):
 class ExtractionConfirm(BaseModel):
     """User review of AI-proposed fields.
 
-    Confirmed values are applied to the linked policy. Rejected fields are
-    ignored. Fields not listed keep their proposed state.
+    Confirmed values are applied to the linked policy. When the document is
+    not linked to a policy and ``create_policy`` is true, a new policy is
+    created from the confirmed values (or matched to an existing policy with
+    the same number and insurer). Rejected fields keep their proposed value
+    but are marked rejected.
     """
 
     policy_id: str | None = None
+    create_policy: bool = False
+    policy_type: PolicyType | None = None
     confirm: dict[str, str] = Field(default_factory=dict)
     reject: list[str] = Field(default_factory=list)
 
