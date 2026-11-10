@@ -126,6 +126,6 @@ def test_policy_validates_member_belongs_to_family(client):
 
 
 def test_policy_requires_authentication(client):
-    user, family = _setup(client)
+    _user, family = _setup(client)
     resp = client.get(f"/api/v1/families/{family['id']}/policies")
     assert resp.status_code == 401

@@ -52,17 +52,17 @@ Total Sum Insured (`)
 Gross Premium
 24500
 for period of 10/03/2023 to 09/03/2024.
-Nominee Name : Test Nominee
+Nominee Name : Rita Tester
 """
     by_name = {f.field_name: f for f in asyncio.run(provider.extract_policy(text))}
-    assert by_name["policy_number"].value == "1234567890123456789"
+    assert by_name["policy_number"].value == "1234 5678 9012 3456 789"
     assert by_name["policyholder_name"].value == "Test Holder"
     assert by_name["insurer"].value == "Example General Insurance Company Limited"
     assert by_name["sum_insured"].value == "1000000"
     assert by_name["premium"].value == "24500"
     assert by_name["start_date"].value == "10/03/2023"
     assert by_name["expiry_date"].value == "09/03/2024"
-    assert by_name["nominee"].value == "Test Nominee"
+    assert by_name["nominee"].value == "Rita Tester"
 
 
 def test_null_provider_finds_mixed_case_insurer_from_prose():
@@ -97,7 +97,8 @@ Premium: 42150
     by_name = {f.field_name: f for f in asyncio.run(provider.extract_policy(text))}
     assert by_name["insurer"].value == "LIFE INSURANCE CORPORATION OF INDIA"
     assert by_name["policy_number"].value == "1234567890"
-    assert by_name["policyholder_name"].value == "MR RAHUL SHARMA"
+    # Honorifics are trimmed from names ("MR RAHUL SHARMA" -> "RAHUL SHARMA").
+    assert by_name["policyholder_name"].value == "RAHUL SHARMA"
     assert by_name["start_date"].value == "15/06/2015"
     assert by_name["maturity_date"].value == "15/06/2035"
     assert by_name["sum_insured"].value == "1000000"
@@ -217,7 +218,7 @@ def test_prompt_injection_in_document_is_not_executed(client):
 
 
 def test_assistant_requires_authentication(client):
-    user, family = _setup(client, "assist_noauth@example.com")
+    _user, family = _setup(client, "assist_noauth@example.com")
     resp = client.post(
         "/api/v1/assistant/ask",
         json={"family_id": family["id"], "question": "summary"},

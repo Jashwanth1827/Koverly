@@ -17,7 +17,7 @@ def tokenize(text: str) -> list[str]:
 
 
 def lexical_overlap(query: str, text: str) -> float:
-    """Fraction of distinct query tokens present in ``text`` (0.0–1.0)."""
+    """Fraction of distinct query tokens present in ``text`` (0.0-1.0)."""
     q_tokens = set(tokenize(query))
     if not q_tokens:
         return 0.0

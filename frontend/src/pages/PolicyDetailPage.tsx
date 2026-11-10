@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { documentApi, policyApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
-import { ApiError } from "@/api/client";
+import { errorMessage, saveBlob } from "@/api/client";
 import { ConfirmButton, Modal } from "@/components/Modal";
 import { Badge, Disclaimer, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import { daysUntil, formatCurrency, formatDate, formatPremium, policyTypeLabel } from "@/lib/format";
@@ -24,6 +24,7 @@ export function PolicyDetailPage() {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [downloadingSummary, setDownloadingSummary] = useState(false);
 
   const policy = useAsync(() => policyApi.get(activeFamilyId!, policyId!), [activeFamilyId, policyId]);
   const docs = useAsync(() => documentApi.list(activeFamilyId!, { policy_id: policyId! }), [activeFamilyId, policyId]);
@@ -54,7 +55,20 @@ export function PolicyDetailPage() {
       setEditing(false);
       policy.reload();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not save changes.");
+      setError(errorMessage(err, "Could not save changes."));
+    }
+  }
+
+  async function downloadSummary() {
+    setDownloadingSummary(true);
+    setError(null);
+    try {
+      const blob = await policyApi.summaryPdfBlob(activeFamilyId!, p.id);
+      saveBlob(blob, `${p.insurer}-${p.policy_number}-summary.pdf`);
+    } catch (err) {
+      setError(errorMessage(err, "Could not generate the summary PDF."));
+    } finally {
+      setDownloadingSummary(false);
     }
   }
 
@@ -88,6 +102,9 @@ export function PolicyDetailPage() {
         action={
           canWrite ? (
             <div className="flex gap-2">
+              <button className="btn-secondary" onClick={downloadSummary} disabled={downloadingSummary}>
+                {downloadingSummary ? "Preparing…" : "Download summary PDF"}
+              </button>
               <button className="btn-secondary" onClick={openEdit}>Edit</button>
               {canDelete && (
                 <ConfirmButton

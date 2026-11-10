@@ -14,7 +14,14 @@ from app.models.claim import (
     Reminder,
     Subscription,
 )
-from app.models.document import Document, DocumentChunk, PolicyExtraction
+from app.models.document import (
+    Document,
+    DocumentAnalysis,
+    DocumentChunk,
+    PolicyCandidateField,
+    PolicyCandidateRecord,
+    PolicyExtraction,
+)
 from app.models.enums import (
     ROLE_RANK,
     AuditAction,
@@ -44,6 +51,7 @@ __all__ = [
     "ClaimEvent",
     "ClaimStatus",
     "Document",
+    "DocumentAnalysis",
     "DocumentChunk",
     "DocumentStatus",
     "DocumentType",
@@ -56,6 +64,8 @@ __all__ = [
     "LoginAttempt",
     "PasswordResetToken",
     "Policy",
+    "PolicyCandidateField",
+    "PolicyCandidateRecord",
     "PolicyExtraction",
     "PolicyStatus",
     "PolicyType",

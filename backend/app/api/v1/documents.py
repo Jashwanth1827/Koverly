@@ -21,21 +21,40 @@ from app.api.deps import (
     require_role,
 )
 from app.core.errors import PermissionDeniedError
-from app.integrations.storage import get_storage
+from app.integrations.storage import content_disposition, get_storage
 from app.models.enums import DocumentType, FamilyRole
 from app.schemas.common import Message, Page
 from app.schemas.document import (
+    AnalysisDetailOut,
+    AnalysisOut,
+    CandidateConfirm,
+    CandidateFieldOut,
+    CandidateOut,
     DocumentOut,
     DocumentUpdate,
     ExtractionConfirm,
     ExtractionOut,
     SignedUrlOut,
 )
-from app.services import document_service, extraction_service, processing_service
+from app.services import (
+    candidate_service,
+    document_service,
+    extraction_service,
+    processing_service,
+)
 
 logger = logging.getLogger("koverly.documents.api")
 
 router = APIRouter(tags=["documents"])
+
+# Content types we are willing to serve back; anything else is downgraded to
+# application/octet-stream so a crafted filename cannot force script execution.
+_SERVEABLE_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
 
 WriterCtx = Annotated[FamilyContext, Depends(require_role(FamilyRole.MEMBER))]
 AdminCtx = Annotated[FamilyContext, Depends(require_role(FamilyRole.ADMIN))]
@@ -158,10 +177,13 @@ async def reprocess_document(
     response_model=SignedUrlOut,
 )
 async def create_signed_url(
-    document_id: str, ctx: FamilyCtx, db: DbSession
+    document_id: str,
+    ctx: FamilyCtx,
+    db: DbSession,
+    disposition: str = Query(default="inline", pattern="^(inline|attachment)$"),
 ) -> SignedUrlOut:
     document = await document_service.get_document(db, ctx.family_id, document_id)
-    url = document_service.signed_download_url(document)
+    url = document_service.signed_download_url(document, disposition=disposition)
     return SignedUrlOut(url=url, expires_in=300)
 
 
@@ -176,7 +198,9 @@ async def download_document(
         content=data,
         media_type=document.content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{document.original_filename}"',
+            "Content-Disposition": content_disposition(
+                "attachment", document.original_filename
+            ),
             "Cache-Control": "no-store",
         },
     )
@@ -191,18 +215,31 @@ async def get_signed_file(
     key: str = Query(...),
     expires: int = Query(...),
     signature: str = Query(...),
+    disposition: str = Query(default="inline", pattern="^(inline|attachment)$"),
+    content_type: str = Query(default="application/octet-stream"),
+    filename: str | None = Query(default=None),
 ) -> Response:
     storage = get_storage()
-    if not storage.verify_signed_url(key, expires, signature):
+    # The signature covers the key, expiry, disposition and content type, so a
+    # client cannot turn an inline preview into something else.
+    if not storage.verify_signed_url(
+        key, expires, signature, disposition=disposition, content_type=content_type
+    ):
         raise PermissionDeniedError("This link is invalid or has expired.")
     # The key is opaque and only ever issued after authorization, so a valid
     # signature is sufficient here; we still avoid leaking other metadata.
     data = await storage.get(key)
-    return Response(
-        content=data,
-        media_type="application/octet-stream",
-        headers={"Cache-Control": "no-store"},
-    )
+    # Restrict to a small allowlist so an attacker who controls the filename
+    # cannot smuggle a scriptable content type into the response.
+    safe_type = content_type if content_type in _SERVEABLE_TYPES else "application/octet-stream"
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+    }
+    if filename:
+        headers["Content-Disposition"] = content_disposition(disposition, filename)
+    return Response(content=data, media_type=safe_type, headers=headers)
 
 
 # --------------------------------------------------------------------------- #
@@ -238,3 +275,100 @@ async def confirm_extractions(
         actor=ctx.user,
     )
     return [ExtractionOut.model_validate(r) for r in rows]
+
+
+def _candidate_out(
+    candidate, fields: list
+) -> CandidateOut:
+    """Serialize a candidate with its fields.
+
+    Built explicitly rather than via ``from_attributes`` so the async session
+    never attempts a lazy relationship load.
+    """
+    return CandidateOut(
+        id=candidate.id,
+        document_id=candidate.document_id,
+        candidate_index=candidate.candidate_index,
+        document_class=candidate.document_class,
+        category=candidate.category,
+        category_confidence=candidate.category_confidence,
+        policy_type=candidate.policy_type,
+        policy_type_confidence=candidate.policy_type_confidence,
+        policy_subtype=candidate.policy_subtype,
+        policy_subtype_confidence=candidate.policy_subtype_confidence,
+        page_start=candidate.page_start,
+        page_end=candidate.page_end,
+        category_data=candidate.category_data or {},
+        status=candidate.status,
+        policy_id=candidate.policy_id,
+        fields=[CandidateFieldOut.model_validate(f) for f in fields],
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Document analysis & policy candidates (automatic understanding)
+# --------------------------------------------------------------------------- #
+@router.get(
+    "/families/{family_id}/documents/{document_id}/analysis",
+    response_model=AnalysisDetailOut,
+)
+async def get_analysis(
+    document_id: str, ctx: FamilyCtx, db: DbSession
+) -> AnalysisDetailOut:
+    """What Koverly understood from this document, plus its policy candidates."""
+    analysis, candidates = await candidate_service.get_analysis(
+        db, ctx.family_id, document_id
+    )
+    out: list[CandidateOut] = []
+    for candidate in candidates:
+        fields = await candidate_service.get_candidate_fields(db, candidate.id)
+        out.append(_candidate_out(candidate, fields))
+    return AnalysisDetailOut(
+        analysis=AnalysisOut.model_validate(analysis),
+        candidates=out,
+        candidate_count=len(out),
+    )
+
+
+@router.post(
+    "/families/{family_id}/documents/{document_id}/candidates/{candidate_id}/confirm",
+    response_model=CandidateOut,
+)
+async def confirm_candidate(
+    document_id: str,
+    candidate_id: str,
+    payload: CandidateConfirm,
+    ctx: WriterCtx,
+    db: DbSession,
+) -> CandidateOut:
+    candidate, _policy = await candidate_service.confirm_candidate(
+        db,
+        family_id=ctx.family_id,
+        document_id=document_id,
+        candidate_id=candidate_id,
+        payload=payload,
+        actor=ctx.user,
+    )
+    fields = await candidate_service.get_candidate_fields(db, candidate.id)
+    return _candidate_out(candidate, fields)
+
+
+@router.post(
+    "/families/{family_id}/documents/{document_id}/candidates/{candidate_id}/reject",
+    response_model=CandidateOut,
+)
+async def reject_candidate(
+    document_id: str,
+    candidate_id: str,
+    ctx: WriterCtx,
+    db: DbSession,
+) -> CandidateOut:
+    candidate = await candidate_service.reject_candidate(
+        db,
+        family_id=ctx.family_id,
+        document_id=document_id,
+        candidate_id=candidate_id,
+        actor=ctx.user,
+    )
+    fields = await candidate_service.get_candidate_fields(db, candidate.id)
+    return _candidate_out(candidate, fields)

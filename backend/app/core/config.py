@@ -57,30 +57,33 @@ class Settings(BaseSettings):
     SIGNED_URL_TTL_SECONDS: int = 300
 
     # --- Uploads ----------------------------------------------------------
+    # The user never selects a type; every reasonable document format is
+    # accepted and the real type is detected from the file's content.
     MAX_UPLOAD_BYTES: int = 15 * 1024 * 1024  # 15 MB
     ALLOWED_UPLOAD_TYPES: str = (
         "application/pdf,"
-        "image/jpeg,"
-        "image/png,"
-        "application/vnd.openxmlformats-officedocument"
-        ".wordprocessingml.document,"
-        "application/vnd.openxmlformats-officedocument"
-        ".spreadsheetml.sheet,"
-        "application/vnd.ms-excel,"
-        "text/csv,"
-        "text/markdown,"
-        "text/plain"
+        "image/jpeg,image/png,image/webp,"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+        "application/msword,"
+        "application/rtf,text/rtf,text/csv,text/markdown,text/plain"
     )
 
     # --- OCR --------------------------------------------------------------
-    # "auto" uses the bundled RapidOCR engine when the ``ocr`` extra is
-    # installed, "rapidocr" requires it, and "none" disables OCR entirely.
-    # Scanned PDF pages and photos are only read when an engine is available.
-    OCR_BACKEND: str = "auto"  # auto | rapidocr | none
-    OCR_MIN_TEXT_CHARS: int = 30  # PDF pages below this are treated as scans
-    OCR_MIN_CONFIDENCE: float = 0.3
-    OCR_PDF_DPI: int = 200
-    OCR_MAX_PAGES: int = 200
+    # Self-hosted Tesseract. When enabled, pages/images without a text layer
+    # are rendered and OCR'd so scanned policy copies can be read. If the
+    # engine or its system dependencies are missing, OCR degrades gracefully:
+    # the document fails with an explicit reason instead of inventing text.
+    OCR_ENABLED: bool = True
+    OCR_LANGUAGES: str = "eng"
+    OCR_DPI: int = 200
+    OCR_MAX_PAGES: int = 10
+    OCR_PAGE_TIMEOUT_SECONDS: int = 60
+    # A PDF page with fewer than this many characters is treated as scanned
+    # (cover pages, signatures and image-only schedules).
+    OCR_MIN_TEXT_CHARS: int = 80
+    # Absolute path to the tesseract binary; empty means "find on PATH".
+    TESSERACT_CMD: str = ""
 
     # --- AI ---------------------------------------------------------------
     # Provider abstraction: "null" (deterministic local, no external calls),

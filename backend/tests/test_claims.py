@@ -113,7 +113,7 @@ def test_claim_documents(client):
 
 
 def test_claim_requires_valid_policy(client):
-    user, family, policy = _setup(client)
+    user, family, _policy = _setup(client)
     resp = client.post(
         f"/api/v1/families/{family['id']}/claims",
         json={

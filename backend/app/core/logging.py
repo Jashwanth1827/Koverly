@@ -56,6 +56,9 @@ def configure_logging() -> None:
         )
     root.addHandler(handler)
     root.setLevel(logging.INFO if not settings.DEBUG else logging.DEBUG)
+    # pypdf emits per-object warnings for malformed-but-readable PDFs; keep them
+    # out of production logs while still surfacing real errors.
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 
 def log_event(logger: logging.Logger, message: str, **fields: Any) -> None:

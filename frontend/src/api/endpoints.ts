@@ -69,6 +69,9 @@ export const policyApi = {
   remove: (familyId: string, id: string) =>
     api.delete<{ message: string }>(`/families/${familyId}/policies/${id}`),
   summary: (familyId: string) => api.get<PolicySummary>(`/families/${familyId}/policies/summary`),
+  /** Generated (never raw) PDF summary of a single policy. */
+  summaryPdfBlob: (familyId: string, id: string) =>
+    api.blob(`/families/${familyId}/policies/${id}/summary.pdf`),
 };
 
 export const documentApi = {
@@ -90,6 +93,22 @@ export const documentApi = {
     api.post<Document>(`/families/${familyId}/documents/${id}/reprocess`),
   extractions: (familyId: string, id: string) =>
     api.get<Extraction[]>(`/families/${familyId}/documents/${id}/extractions`),
+  analysis: (familyId: string, id: string) =>
+    api.get<import("./types").AnalysisDetail>(`/families/${familyId}/documents/${id}/analysis`),
+  confirmCandidate: (
+    familyId: string,
+    documentId: string,
+    candidateId: string,
+    body: { policy_id?: string; member_id?: string; category?: string; confirm: Record<string, string>; reject: string[] },
+  ) =>
+    api.post<import("./types").PolicyCandidate>(
+      `/families/${familyId}/documents/${documentId}/candidates/${candidateId}/confirm`,
+      body,
+    ),
+  rejectCandidate: (familyId: string, documentId: string, candidateId: string) =>
+    api.post<import("./types").PolicyCandidate>(
+      `/families/${familyId}/documents/${documentId}/candidates/${candidateId}/reject`,
+    ),
   confirm: (
     familyId: string,
     id: string,
@@ -101,12 +120,15 @@ export const documentApi = {
       reject: string[];
     },
   ) => api.post<Extraction[]>(`/families/${familyId}/documents/${id}/extractions/confirm`, body),
-  signedUrl: (familyId: string, id: string) =>
+  signedUrl: (familyId: string, id: string, disposition: "inline" | "attachment" = "inline") =>
     api.post<{ url: string; expires_in: number }>(
-      `/families/${familyId}/documents/${id}/signed-url`,
+      `/families/${familyId}/documents/${id}/signed-url?disposition=${disposition}`,
     ),
   downloadUrl: (familyId: string, id: string) =>
     `/api/v1/families/${familyId}/documents/${id}/download`,
+  /** Authenticated binary fetch (never exposes the raw file in a URL). */
+  previewBlob: (familyId: string, id: string) =>
+    api.blob(`/families/${familyId}/documents/${id}/download`),
 };
 
 export const claimApi = {

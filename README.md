@@ -19,8 +19,11 @@ information in an emergency.
 | Dashboard | Family protection overview: active policies, annual premium, life/health cover, renewals, actions, recent claims. |
 | Family | One family group with members (self, spouse, parents, children, siblings) and roles (owner, admin, member, viewer). |
 | Policies | Life, health, motor, home, travel, personal accident, and other policies with extensible metadata. |
-| Documents | Private policy document vault (PDF, JPG/PNG, DOCX, XLSX/XLS, CSV, MD, TXT) with upload, view, download, delete, and processing status. |
-| AI extraction | Text extraction across PDF, images, Word, Excel, CSV, Markdown, and text (including offline OCR for photos and scanned PDF pages), classification, and structured field extraction with confidence and source pages. Fields you review are the only ones applied. |
+| Documents | Private policy document vault (PDF, scan, photo, Word, Excel, CSV, Markdown, text) with upload, view, download, delete, and processing status. |
+| Automatic understanding | Upload any insurance document — Koverly detects the format, reads it (OCR for scans/photos), classifies what it is, infers the insurance category/type, and shows what it found. No manual type selection. |
+| OCR | Self-hosted Tesseract reads scanned policy copies — PDFs without a text layer and JPG/PNG/WEBP images — so their fields are extractable too. |
+| AI extraction | Structured field extraction with confidence, source page, source text, and an evidence state (`explicitly_found` / `inferred` / `uncertain` / `not_found`). Fields you review are the only ones applied. |
+| Multi-policy documents | One upload can hold several policies; Koverly splits it into separate candidates, each with its own classification and page range. |
 | Ask InsuraOS | Grounded Q&A over your own policies, family, claims, and documents, with source references. |
 | Insurance Intelligence | Expiring policies, missing information, and *potential* overlaps — never stated as advice. |
 | Claims | Claim records with statuses, a timeline, and claim documents. |
@@ -66,10 +69,21 @@ app/
 
 ### Key design choices
 
-- **AI provider abstraction** — `AIProvider` with `extract_policy`, `answer_policy_question`,
+- **AI provider abstraction** — `AIProvider` with `extract_candidates` (one or more policies per
+  document), `classify_insurance`, `extract_policy`, `answer_policy_question`,
   `summarize_document`, and `analyze_coverage`. `null` is a deterministic local provider that
   performs no external calls and fabricates nothing. `openai` targets any OpenAI-compatible
   endpoint. Swapping providers is configuration, not code.
+- **Multi-format document processors** — `app/utils/text_extract.py` dispatches by detected
+  content type: PDF (pypdf + OCR fallback), images (Pillow + Tesseract), DOCX (python-docx or a
+  ZIP/XML fallback), legacy DOC (printable-run recovery), RTF, and plain text. Adding a format is
+  a new branch in one place, never a change to the pipeline.
+- **Universal, non-fixed schema** — universal fields (insurer, policy number, premium, dates, ...)
+  plus dynamic, category-specific extras (health: waiting period, TPA; motor: IDV, registration;
+  life: maturity, nominee; travel; property). Nothing is mandatory and absent fields stay absent.
+- **Taxonomy is secondary** — the user never selects a category or type. `app/ai/taxonomy.py`
+  maps inferred categories onto the persisted policy types so dashboards, emergency mode, and
+  coverage maps keep working.
 - **Private storage with signed URLs** — documents are never served publicly; access goes through
   short-lived signed URLs.
 - **Retrieval with tenant isolation** — document chunks are always filtered by `user_id`/`family_id`
@@ -78,10 +92,21 @@ app/
   separated from system instructions and the user question.
 - **Asynchronous processing** — uploads return immediately; extraction and indexing run in the
   background and update document status.
+- **Self-hosted OCR** — pages without a text layer (scans) are rendered with `pdf2image`
+  (poppler) and read with Tesseract. OCR is bounded by page count and per-page timeout, and it
+  degrades to a clear failure message rather than fabricating text when it is unavailable or
+  finds nothing.
 
 ---
 
 ## Getting started
+
+### Clone
+
+```bash
+git clone https://github.com/Jashwanth1827/Koverly.git
+cd Koverly
+```
 
 ### Prerequisites
 
@@ -101,6 +126,14 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 API docs (development only): <http://localhost:8000/api/docs>
+
+For scanned copies and photos, install the OCR system packages (otherwise those
+uploads fail with a clear message rather than fabricating text):
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+```
 
 ### Frontend
 
@@ -126,6 +159,40 @@ docker compose up --build
 # Frontend: http://localhost:8080   Backend: http://localhost:8000
 ```
 
+### Deploy to Render
+
+A Render Blueprint (`render.yaml`) is included. It provisions a Postgres database and a single
+web service that builds the combined production image (`deploy/render/Dockerfile`): nginx serves
+the SPA and proxies `/api` to FastAPI on the same origin (required because document signed URLs
+are relative paths).
+
+**One-click:** Render Dashboard → **New → Blueprint** → select this repository → **Apply**.
+Render wires `DATABASE_URL` from the database, generates `SECRET_KEY`, and deploys.
+
+**Or with the Render CLI:**
+
+```bash
+render blueprint launch          # create the service + database from render.yaml
+```
+
+Build and run the exact production image locally:
+
+```bash
+docker build -f deploy/render/Dockerfile -t koverly .
+docker run -p 8080:8080 -e SECRET_KEY=dev-secret -e DATABASE_URL="sqlite+aiosqlite:////tmp/k.db" koverly
+# http://localhost:8080  (health: /health)
+```
+
+Notes:
+
+- The container binds nginx to the platform-provided `$PORT`; the API runs internally on `:8000`.
+- `postgres://` / `postgresql://` URLs from Render are rewritten to `postgresql+asyncpg://`.
+- `CORS_ORIGINS` defaults to `RENDER_EXTERNAL_URL` when set.
+- Local storage (`STORAGE_LOCAL_ROOT`) is used by default. Render's disk is ephemeral on the free
+  plan — attach a persistent disk at `/app/storage`, or configure S3, for durable documents.
+- Tables are created on startup (`init_models`). There is no migration tool by
+  design: prefer storing variable attributes in `metadata_json` over new columns.
+
 ---
 
 ## Configuration
@@ -139,7 +206,10 @@ All secrets come from environment variables — nothing sensitive is committed. 
 | `DATABASE_URL` | SQLite by default; PostgreSQL via `postgresql+asyncpg://…` in production. |
 | `STORAGE_BACKEND` | `local` or `s3`. |
 | `SIGNED_URL_TTL_SECONDS` | Lifetime of document access URLs. |
-| `OCR_BACKEND` | `auto` (default), `rapidocr`, or `none`. Offline OCR for images and scanned PDF pages. |
+| `OCR_ENABLED` | `true`/`false` — self-hosted Tesseract OCR for scanned copies. |
+| `OCR_LANGUAGES` | Tesseract language codes (default `eng`). |
+| `OCR_DPI` / `OCR_MAX_PAGES` / `OCR_PAGE_TIMEOUT_SECONDS` | Rendering quality and OCR bounds. |
+| `TESSERACT_CMD` | Optional absolute path to the tesseract binary. |
 | `AI_PROVIDER` | `null` (default, offline, no fabrication) or `openai`. |
 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | External model credentials and endpoint. |
 | `NOTIFICATION_BACKEND` | `noop` or `webhook`. |
@@ -163,15 +233,15 @@ All secrets come from environment variables — nothing sensitive is committed. 
 
 ## Known limitations
 
-- Local and test environments create tables via `init_models`; production should use Alembic
-  migrations (a migration toolchain is intentionally not added yet to avoid premature dependencies).
-- OCR is optional (`.[ocr]`). Without it, images and scanned PDFs fail with an explicit
-  reason rather than producing empty text. The default engine (RapidOCR/ONNX) is CPU-only,
-  so large scanned documents take longer to process.
+- Tables are created via `init_models`; there is no migration toolchain by design
+  (keep variable attributes in `metadata_json` instead of new columns).
+- OCR is self-hosted Tesseract. Without the `tesseract-ocr` and `poppler-utils`
+  system packages, images and scanned PDFs fail with an explicit reason rather
+  than producing empty text. CPU-only, so large scanned documents take longer.
 - Billing records a plan preference only; no payment processor is connected.
 - Email/WhatsApp ingestion and insurer integrations are extension points, not implemented.
 
 ## Roadmap (extension points)
 
-Email ingestion, WhatsApp notifications, OCR providers, insurer integrations, employer benefits,
+Email ingestion, WhatsApp notifications, insurer integrations, employer benefits,
 advisor portal, B2B accounts, analytics, and multilingual support.

@@ -76,4 +76,52 @@ export const api = {
     fd.append("file", file);
     return request<T>("POST", path, undefined, { formData: fd });
   },
+  /** Fetch a binary endpoint with auth and return it as a Blob. */
+  blob: (path: string) => requestBlob(path),
 };
+
+async function requestBlob(path: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const resp = await fetch(`${BASE}/api/v1${path}`, { headers });
+  if (!resp.ok) {
+    let code = "ERROR";
+    let message = "Something went wrong.";
+    let details: Record<string, unknown> | undefined;
+    try {
+      const data = JSON.parse(await resp.text());
+      code = data?.error?.code || code;
+      message = data?.error?.message || message;
+      details = data?.error?.details;
+    } catch {
+      /* non-JSON error body */
+    }
+    if (resp.status === 401 && token) setToken(null);
+    throw new ApiError(resp.status, code, message, details);
+  }
+  return resp.blob();
+}
+
+/** Human-readable message for any thrown error, preferring API detail. */
+export function errorMessage(err: unknown, fallback = "Something went wrong."): string {
+  if (err instanceof ApiError) {
+    const fields = (err.details as { fields?: Array<{ msg?: string }> } | undefined)?.fields;
+    const firstField = Array.isArray(fields) ? fields.find((f) => f?.msg)?.msg : undefined;
+    return firstField || err.message || fallback;
+  }
+  if (err instanceof Error) return err.message || fallback;
+  return fallback;
+}
+
+/** Trigger a browser download for a Blob without leaking the object URL. */
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

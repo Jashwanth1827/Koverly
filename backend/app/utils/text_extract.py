@@ -1,298 +1,513 @@
-"""Document text extraction.
+"""Document text extraction — provider/adapter architecture.
 
-Supported inputs:
+The rest of the application depends on one function, ``extract_text``, not on
+any particular library. Each format has its own processor, so adding a format
+(or swapping a library) never touches the pipeline:
 
-* **PDF** - parsed directly; scanned pages fall back to OCR when available.
-* **Images (JPG/PNG)** - read with the OCR engine.
-* **Word (.docx)** - paragraphs and tables read with ``python-docx``.
-* **Excel (.xlsx/.xls)** - every sheet read row by row with ``openpyxl`` /
-  ``xlrd``.
-* **Text (.md/.csv/.txt)** - decoded directly.
+    DocumentProcessor
+    ├── PDFProcessor    (pypdf; OCR fallback for scanned pages)
+    ├── ImageProcessor  (JPG/PNG/WEBP via Pillow + Tesseract)
+    ├── WordProcessor   (DOCX via python-docx, DOC via OLE text scan)
+    └── TextProcessor   (TXT and RTF)
 
-Page boundaries are preserved using form-feed characters so downstream
-extraction can report a source page. For spreadsheets each sheet becomes a
-page; for Word documents the whole file is a single page.
-
-OCR is never faked: if no engine is available the document fails with an
-explicit reason rather than producing empty or invented text.
+Page boundaries are preserved with form-feed characters so downstream
+extraction can report a source page. OCR is best-effort and never fabricates:
+if the engine is missing or yields nothing, the document fails with an
+explicit reason rather than silently producing empty or invented text.
 """
 
 from __future__ import annotations
 
-import csv
 import io
 import logging
+import re
+import shutil
+import zipfile
+from dataclasses import dataclass
 
 from app.core.config import settings
-from app.utils.ocr import (
-    OCRProcessingError,
-    OCRUnavailableError,
-    is_ocr_available,
-    ocr_image,
-    unavailable_message,
-)
 
 logger = logging.getLogger("koverly.text_extract")
+
+# Everything the backend can safely read. Kept in one place so upload
+# validation, storage sniffing, and the processors cannot drift apart.
+PDF_TYPES = {"application/pdf"}
+IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+DOCX_TYPES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+DOC_TYPES = {"application/msword"}
+XLSX_TYPES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+XLS_TYPES = {"application/vnd.ms-excel"}
+RTF_TYPES = {"application/rtf", "text/rtf"}
+CSV_TYPES = {"text/csv"}
+MD_TYPES = {"text/markdown"}
+TEXT_TYPES = {"text/plain"}
+
+SUPPORTED_CONTENT_TYPES = (
+    PDF_TYPES
+    | IMAGE_TYPES
+    | DOCX_TYPES
+    | DOC_TYPES
+    | XLSX_TYPES
+    | XLS_TYPES
+    | RTF_TYPES
+    | CSV_TYPES
+    | MD_TYPES
+    | TEXT_TYPES
+)
+
+TEXT_DOCUMENT = "text_document"
+SCANNED_DOCUMENT = "scanned_document"
+IMAGE_DOCUMENT = "image_document"
+
+_MAX_TEXT_CHARS = 400_000
 
 
 class TextExtractionError(Exception):
     pass
 
 
-def _clean_text(text: str) -> str:
-    # Normalise MuPDF's layout spacing without destroying line structure.
-    lines = [line.rstrip() for line in text.replace("\r\n", "\n").split("\n")]
-    return "\n".join(lines).strip()
+@dataclass
+class TextResult:
+    """Extracted text plus how it was obtained."""
+
+    text: str
+    page_count: int | None
+    source_kind: str
+    ocr_used: bool = False
 
 
-def _extract_pdf_pages_pypdf(data: bytes) -> tuple[list[str], int]:
+def ocr_available() -> bool:
+    """True when OCR is enabled and both the binary and Python deps exist."""
+    if not settings.OCR_ENABLED:
+        return False
+    if not (settings.TESSERACT_CMD or shutil.which("tesseract")):
+        return False
+    try:
+        import pytesseract  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _configure_tesseract(pytesseract) -> None:
+    if settings.TESSERACT_CMD:
+        pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_CMD
+
+
+def _ocr_image(image) -> str:
+    import pytesseract
+
+    _configure_tesseract(pytesseract)
+    try:
+        return pytesseract.image_to_string(
+            image,
+            lang=settings.OCR_LANGUAGES,
+            timeout=settings.OCR_PAGE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 - one page must not fail the whole doc
+        logger.warning("ocr_page_failed error=%s", exc)
+        return ""
+
+
+# --------------------------------------------------------------------------- #
+# PDF
+# --------------------------------------------------------------------------- #
+def _extract_pdf(data: bytes) -> TextResult:
     try:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover
         raise TextExtractionError("PDF support is not installed.") from exc
 
-    reader = PdfReader(io.BytesIO(data))
-    pages: list[str] = []
+    try:
+        reader = PdfReader(io.BytesIO(data))
+    except Exception as exc:
+        raise TextExtractionError(
+            "We couldn't read this document. Please upload another copy."
+        ) from exc
+
+    page_count = len(reader.pages)
+    native: list[str] = []
     for page in reader.pages:
         try:
-            pages.append(_clean_text(page.extract_text() or ""))
+            native.append(page.extract_text() or "")
         except Exception:  # noqa: BLE001 - one bad page shouldn't fail all
-            pages.append("")
-    return pages, len(reader.pages)
+            native.append("")
 
+    need_ocr = [
+        i
+        for i, text in enumerate(native)
+        if len(text.strip()) < settings.OCR_MIN_TEXT_CHARS
+    ]
+    ocr_used = False
+    if need_ocr:
+        ocr_pages = _ocr_pdf_pages(data, need_ocr, page_count)
+        if ocr_pages:
+            ocr_used = True
+        for index, text in ocr_pages.items():
+            native[index] = text
 
-def _ocr_pdf_scan(page) -> str:
-    """Rasterise a single PDF page and run OCR on it."""
-    if settings.OCR_PDF_DPI < 72 or settings.OCR_PDF_DPI > 600:
+    if not any(t.strip() for t in native):
+        if settings.OCR_ENABLED:
+            raise TextExtractionError(
+                "No readable text was found in this PDF, even after OCR. "
+                "Please upload a clearer copy or enter the details manually."
+            )
         raise TextExtractionError(
-            "OCR_PDF_DPI must be between 72 and 600."
+            "No readable text was found in this PDF. It looks like a scanned "
+            "document; please upload a text-based PDF or enter the details "
+            "manually."
+        )
+
+    # A PDF whose pages were mostly read by OCR is a scanned document.
+    mostly_ocr = ocr_used and len(need_ocr) >= max(1, page_count // 2)
+    return TextResult(
+        text=_truncate("\f".join(native)),
+        page_count=page_count,
+        source_kind=SCANNED_DOCUMENT if mostly_ocr else TEXT_DOCUMENT,
+        ocr_used=ocr_used,
+    )
+
+
+def _ocr_pdf_pages(
+    data: bytes, page_indexes: list[int], page_count: int
+) -> dict[int, str]:
+    """OCR the given 0-based page indexes. Returns ``{index: text}``."""
+    if not settings.OCR_ENABLED or not ocr_available():
+        logger.info(
+            "ocr_unavailable pages=%s page_count=%s", len(page_indexes), page_count
+        )
+        return {}
+
+    try:
+        import pdf2image
+    except ImportError:
+        logger.info("ocr_unavailable reason=pdf2image_missing")
+        return {}
+
+    targets = sorted(page_indexes)[: settings.OCR_MAX_PAGES]
+    if len(page_indexes) > settings.OCR_MAX_PAGES:
+        logger.info(
+            "ocr_page_limit_reached requested=%s limit=%s",
+            len(page_indexes),
+            settings.OCR_MAX_PAGES,
+        )
+
+    results: dict[int, str] = {}
+    batch_start = batch_end = targets[0]
+    batches: list[tuple[int, int]] = []
+    for index in targets[1:]:
+        if index == batch_end + 1:
+            batch_end = index
+        else:
+            batches.append((batch_start, batch_end))
+            batch_start = batch_end = index
+    batches.append((batch_start, batch_end))
+
+    for first, last in batches:
+        try:
+            images = pdf2image.convert_from_bytes(
+                data,
+                dpi=settings.OCR_DPI,
+                fmt="png",
+                first_page=first + 1,
+                last_page=last + 1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ocr_render_failed pages=%s-%s error=%s", first, last, exc)
+            continue
+        for offset, image in enumerate(images):
+            results[first + offset] = _ocr_image(image)
+    return results
+
+
+# --------------------------------------------------------------------------- #
+# Images (JPG / PNG / WEBP)
+# --------------------------------------------------------------------------- #
+def _extract_image(data: bytes) -> TextResult:
+    if not ocr_available():
+        raise TextExtractionError(
+            "Image OCR is not available on this server. Please upload a "
+            "text-based PDF or enter the details manually."
         )
     try:
-        import pymupdf
-    except ImportError as exc:  # pragma: no cover - optional extra
-        raise OCRUnavailableError(unavailable_message()) from exc
-
-    pixmap = page.get_pixmap(
-        dpi=settings.OCR_PDF_DPI, colorspace=pymupdf.csRGB, alpha=False
-    )
-    return ocr_image(pixmap.tobytes("png"))
-
-
-def _extract_pdf_pages_pymupdf(data: bytes) -> tuple[list[str], int]:
-    """Extract PDF text, falling back to OCR for pages without text."""
-    try:
-        import pymupdf
-    except ImportError:  # optional extra not installed
-        return _extract_pdf_pages_pypdf(data)
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover
+        raise TextExtractionError("Image support is not installed.") from exc
 
     try:
-        document = pymupdf.open(stream=data, filetype="pdf")
+        image = Image.open(io.BytesIO(data))
+        image.load()
     except Exception as exc:
-        raise TextExtractionError("Could not read the PDF file.") from exc
+        raise TextExtractionError(
+            "We couldn't read this document. Please upload another copy."
+        ) from exc
 
-    pages: list[str] = []
-    ocr_pages = 0
-    try:
-        for page in document:
-            text = _clean_text(page.get_text("text") or "")
-            needs_ocr = len(text) < settings.OCR_MIN_TEXT_CHARS
-            if needs_ocr and is_ocr_available():
-                if ocr_pages >= settings.OCR_MAX_PAGES:
-                    raise TextExtractionError(
-                        f"This PDF needs OCR on more than {settings.OCR_MAX_PAGES} "
-                        "pages. Split the document into smaller files and upload "
-                        "them separately."
-                    )
-                ocr_text = _ocr_pdf_scan(page).strip()
-                ocr_pages += 1
-                if ocr_text:
-                    text = f"{text}\n{ocr_text}".strip() if text else ocr_text
-            pages.append(text)
-        if ocr_pages:
-            logger.info(
-                "pdf_ocr_pages_processed",
-                extra={"extra_fields": {"pages": ocr_pages}},
-            )
-        return pages, document.page_count
-    finally:
-        document.close()
+    text = _ocr_image(image)
+    if not text.strip():
+        raise TextExtractionError(
+            "No readable text was found in this image. Please upload a clearer "
+            "copy or enter the details manually."
+        )
+    return TextResult(
+        text=_truncate(text), page_count=1, source_kind=IMAGE_DOCUMENT, ocr_used=True
+    )
 
 
-def extract_pdf_text(data: bytes) -> tuple[str, int]:
-    """Return ``(text_with_page_breaks, page_count)``.
+# --------------------------------------------------------------------------- #
+# Word
+# --------------------------------------------------------------------------- #
+def _extract_docx(data: bytes) -> TextResult:
+    """Read a DOCX without a hard dependency on python-docx.
 
-    Uses MuPDF when available (required for scanned-page OCR) and falls back
-    to pypdf for text-only PDFs when the optional extra is not installed.
+    A DOCX is a ZIP of XML. We read ``word/document.xml`` and split paragraphs,
+    which covers the overwhelming majority of policy documents. If
+    ``python-docx`` is installed we prefer it (better structure handling).
     """
     try:
-        pages, page_count = _extract_pdf_pages_pymupdf(data)
-    except OCRUnavailableError as exc:
-        raise TextExtractionError(str(exc)) from exc
-    except OCRProcessingError as exc:
-        raise TextExtractionError(str(exc)) from exc
+        import docx  # type: ignore
 
-    text = "\f".join(pages)
-    if not text.strip():
-        raise TextExtractionError(
-            "No text could be extracted from this PDF. It may be a scanned "
-            "document and OCR is not available; upload a text-based PDF or "
-            "install the OCR extra."
-        )
-    return text, page_count
-
-
-def extract_image_text(data: bytes) -> tuple[str, int]:
-    if not is_ocr_available():
-        raise TextExtractionError(unavailable_message())
-    try:
-        text = ocr_image(data)
-    except (OCRUnavailableError, OCRProcessingError) as exc:
-        raise TextExtractionError(str(exc)) from exc
-    if not text.strip():
-        raise TextExtractionError(
-            "No readable text was found in this image. Try a clearer scan "
-            "with better lighting, or upload a text-based PDF."
-        )
-    logger.info("image_ocr_extracted", extra={"extra_fields": {"chars": len(text)}})
-    return text, 1
-
-
-def _decode_text(data: bytes) -> str:
-    for encoding in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
-        try:
-            return data.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    raise TextExtractionError("Could not decode the text file.")
-
-
-def extract_docx_text(data: bytes) -> tuple[str, int]:
-    """Extract paragraphs and tables from a .docx document."""
-    try:
-        import docx
-    except ImportError as exc:  # pragma: no cover - dependency is bundled
-        raise TextExtractionError("Word (.docx) support is not installed.") from exc
-
-    try:
         document = docx.Document(io.BytesIO(data))
+        text = "\n".join(p.text for p in document.paragraphs)
+        for table in document.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    text += "\n" + " : ".join(cells)
+        if text.strip():
+            return TextResult(
+                text=_truncate(text), page_count=None, source_kind=TEXT_DOCUMENT
+            )
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.info("python_docx_failed falling back to xml parse: %s", exc)
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8", "ignore")
     except Exception as exc:
-        raise TextExtractionError("Could not read the Word document.") from exc
-
-    blocks: list[str] = [p.text.strip() for p in document.paragraphs if p.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            if any(cells):
-                blocks.append(" | ".join(cells))
-
-    text = "\n".join(blocks).strip()
-    if not text:
         raise TextExtractionError(
-            "No readable text was found in this Word document."
-        )
-    logger.info("docx_extracted", extra={"extra_fields": {"chars": len(text)}})
-    return text, 1
+            "We couldn't read this document. Please upload another copy."
+        ) from exc
 
-
-def _rows_to_text(rows: list[list[object]]) -> str:
-    lines: list[str] = []
-    for row in rows:
-        cells = ["" if cell is None else str(cell).strip() for cell in row]
-        if any(cells):
-            lines.append(" | ".join(cells))
-    return "\n".join(lines)
-
-
-def _extract_xlsx_text(data: bytes) -> tuple[str, int]:
-    import openpyxl
-
-    workbook = openpyxl.load_workbook(
-        io.BytesIO(data), read_only=True, data_only=True
-    )
-    try:
-        pages: list[str] = []
-        for sheet in workbook.worksheets:
-            text = _rows_to_text([list(row) for row in sheet.iter_rows(values_only=True)])
-            pages.append(text)
-        return "\f".join(pages), max(len(pages), 1)
-    finally:
-        workbook.close()
-
-
-def _extract_xls_text(data: bytes) -> tuple[str, int]:
-    import xlrd
-
-    workbook = xlrd.open_workbook(file_contents=data)
-    pages: list[str] = []
-    for sheet in workbook.sheets():
-        rows = [
-            [sheet.cell_value(r, c) for c in range(sheet.ncols)]
-            for r in range(sheet.nrows)
-        ]
-        pages.append(_rows_to_text(rows))
-    return "\f".join(pages), max(len(pages), 1)
-
-
-def extract_spreadsheet_text(data: bytes, content_type: str) -> tuple[str, int]:
-    """Extract every sheet of a spreadsheet, one sheet per page."""
-    try:
-        if content_type == "application/vnd.ms-excel":
-            text, page_count = _extract_xls_text(data)
-        else:
-            text, page_count = _extract_xlsx_text(data)
-    except TextExtractionError:
-        raise
-    except Exception as exc:
-        raise TextExtractionError("Could not read the spreadsheet.") from exc
-
+    xml = re.sub(r"</w:p>", "\n", xml)
+    xml = re.sub(r"<w:tab[^>]*/>", "\t", xml)
+    xml = re.sub(r"<w:br[^>]*/>", "\n", xml)
+    text = _unescape_xml(re.sub(r"<[^>]+>", "", xml))
     if not text.strip():
         raise TextExtractionError(
-            "No readable text was found in this spreadsheet."
+            "We couldn't read any text from this Word document. Please upload "
+            "another copy or enter the details manually."
         )
-    logger.info(
-        "spreadsheet_extracted",
-        extra={"extra_fields": {"sheets": page_count, "chars": len(text)}},
-    )
-    return text, page_count
+    return TextResult(text=_truncate(text), page_count=None, source_kind=TEXT_DOCUMENT)
 
 
-def extract_csv_text(data: bytes) -> tuple[str, int]:
-    raw = _decode_text(data)
+def _extract_doc(data: bytes) -> TextResult:
+    """Best-effort text recovery from a legacy binary .doc (OLE) file.
+
+    There is no pure-Python .doc parser. We scan the OLE stream for runs of
+    printable text, which recovers policy text in practice. If nothing usable
+    is found we fail explicitly rather than pretending the document was read.
+    """
+    chunks: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        if len(current) >= 12:
+            chunks.append("".join(current))
+        current.clear()
+
+    for byte in data:
+        ch = chr(byte)
+        if ch in "\r\n\t" or 32 <= byte < 127:
+            current.append("\n" if ch in "\r\n" else ch)
+        elif byte in (0x82, 0x85, 0x91, 0x92, 0x93, 0x94, 0x96, 0x97):
+            current.append(
+                {
+                    # Windows-1252 punctuation mapped to its Unicode
+                    # counterpart; the "ambiguous" characters are the point.
+                    0x82: "‚", 0x85: "…", 0x91: "‘", 0x92: "’",  # noqa: RUF001
+                    0x93: "“", 0x94: "”", 0x96: "–", 0x97: "—",  # noqa: RUF001
+                }[byte]
+            )
+        else:
+            flush()
+    flush()
+
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(chunks)).strip()
+    if len(text) < 40:
+        raise TextExtractionError(
+            "We couldn't read this Word document. Please save it as a PDF and "
+            "upload that, or enter the details manually."
+        )
+    return TextResult(text=_truncate(text), page_count=None, source_kind=TEXT_DOCUMENT)
+
+
+def _extract_rtf(data: bytes) -> TextResult:
+    raw = data.decode("latin-1", "ignore")
     try:
-        rows = list(csv.reader(io.StringIO(raw)))
-    except csv.Error as exc:
-        raise TextExtractionError("Could not read the CSV file.") from exc
-    text = _rows_to_text(rows).strip()
-    if not text:
-        raise TextExtractionError("No readable text was found in this CSV file.")
-    return text, 1
+        from striprtf.striprtf import rtf_to_text  # type: ignore
+
+        text = rtf_to_text(raw)
+    except ImportError:
+        text = _strip_rtf_manually(raw)
+    if not text.strip():
+        raise TextExtractionError(
+            "We couldn't read any text from this document. Please upload "
+            "another copy or enter the details manually."
+        )
+    return TextResult(text=_truncate(text), page_count=None, source_kind=TEXT_DOCUMENT)
 
 
-def extract_plain_text(data: bytes) -> tuple[str, int]:
-    text = _decode_text(data).strip()
-    if not text:
-        raise TextExtractionError("This file is empty.")
-    return text, 1
+def _strip_rtf_manually(raw: str) -> str:
+    text = re.sub(r"\\'[0-9a-fA-F]{2}", " ", raw)
+    text = re.sub(r"\\[a-zA-Z]+-?\d* ?", " ", text)
+    text = text.replace("\\{", "{").replace("\\}", "}").replace("\\\\", "\\")
+    text = re.sub(r"[{}]", " ", text)
+    return re.sub(r"[ \t]{2,}", " ", text)
 
 
-def extract_text(data: bytes, content_type: str) -> tuple[str, int | None]:
-    if content_type == "application/pdf":
-        return extract_pdf_text(data)
-    if content_type in {"image/jpeg", "image/png"}:
-        return extract_image_text(data)
-    if (
-        content_type
-        == "application/vnd.openxmlformats-officedocument"
-        ".wordprocessingml.document"
-    ):
-        return extract_docx_text(data)
-    if content_type in {
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-excel",
-    }:
-        return extract_spreadsheet_text(data, content_type)
-    if content_type == "text/csv":
-        return extract_csv_text(data)
-    if content_type in {"text/markdown", "text/plain"}:
-        return extract_plain_text(data)
-    raise TextExtractionError("Unsupported document type for text extraction.")
+def _extract_plain_text(data: bytes) -> TextResult:
+    text = ""
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            text = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text.strip():
+        raise TextExtractionError(
+            "We couldn't read any text from this document. Please upload "
+            "another copy or enter the details manually."
+        )
+    return TextResult(text=_truncate(text), page_count=None, source_kind=TEXT_DOCUMENT)
+
+
+# --------------------------------------------------------------------------- #
+# Spreadsheets (XLSX / XLS) and CSV
+# --------------------------------------------------------------------------- #
+def _extract_spreadsheet(data: bytes, kind: str) -> TextResult:
+    """Read a spreadsheet. Rows are joined with `` | `` like table cells.
+
+    Sheets become pages (separated by form feeds) so extracted fields can cite
+    a real sheet number, mirroring how PDF pages are reported.
+    """
+    try:
+        if kind == "xlsx":
+            from openpyxl import load_workbook  # type: ignore
+
+            workbook = load_workbook(
+                io.BytesIO(data), read_only=True, data_only=True
+            )
+            try:
+                sheets = []
+                for sheet in workbook.worksheets:
+                    rows = [
+                        " | ".join(
+                            str(cell) for cell in row if cell is not None
+                        )
+                        for row in sheet.iter_rows(values_only=True)
+                    ]
+                    sheets.append("\n".join(r for r in rows if r.strip()))
+            finally:
+                workbook.close()
+        else:
+            import xlrd  # type: ignore
+
+            workbook = xlrd.open_workbook(file_contents=data)
+            sheets = []
+            for index in range(workbook.nsheets):
+                sheet = workbook.sheet_by_index(index)
+                rows = [
+                    " | ".join(
+                        str(sheet.cell_value(r, c))
+                        for c in range(sheet.ncols)
+                        if str(sheet.cell_value(r, c)).strip()
+                    )
+                    for r in range(sheet.nrows)
+                ]
+                sheets.append("\n".join(r for r in rows if r.strip()))
+    except ImportError as exc:  # pragma: no cover - dependency missing
+        raise TextExtractionError(
+            "Spreadsheet support is not installed on this server."
+        ) from exc
+    except Exception as exc:
+        raise TextExtractionError(
+            "We couldn't read this spreadsheet. Please upload another copy "
+            "or enter the details manually."
+        ) from exc
+
+    text = "\f".join(s for s in sheets if s.strip())
+    if not text.strip():
+        raise TextExtractionError(
+            "We couldn't read any text from this spreadsheet. Please upload "
+            "another copy or enter the details manually."
+        )
+    return TextResult(
+        text=_truncate(text),
+        page_count=len(sheets),
+        source_kind=TEXT_DOCUMENT,
+    )
+
+
+def _extract_csv(data: bytes) -> TextResult:
+    text = ""
+    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
+        try:
+            text = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text.strip():
+        raise TextExtractionError(
+            "We couldn't read any text from this file. Please upload another "
+            "copy or enter the details manually."
+        )
+    return TextResult(text=_truncate(text), page_count=1, source_kind=TEXT_DOCUMENT)
+
+
+# --------------------------------------------------------------------------- #
+# Dispatch
+# --------------------------------------------------------------------------- #
+def _truncate(text: str) -> str:
+    return text[:_MAX_TEXT_CHARS]
+
+
+def _unescape_xml(text: str) -> str:
+    return (
+        text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+    )
+
+
+def extract_text(data: bytes, content_type: str) -> TextResult:
+    """Extract text from any supported document. Never fabricates content."""
+    if content_type in PDF_TYPES:
+        return _extract_pdf(data)
+    if content_type in IMAGE_TYPES:
+        return _extract_image(data)
+    if content_type in DOCX_TYPES:
+        return _extract_docx(data)
+    if content_type in DOC_TYPES:
+        return _extract_doc(data)
+    if content_type in XLSX_TYPES:
+        return _extract_spreadsheet(data, "xlsx")
+    if content_type in XLS_TYPES:
+        return _extract_spreadsheet(data, "xls")
+    if content_type in RTF_TYPES:
+        return _extract_rtf(data)
+    if content_type in CSV_TYPES:
+        return _extract_csv(data)
+    if content_type in MD_TYPES or content_type in TEXT_TYPES:
+        return _extract_plain_text(data)
+    raise TextExtractionError(
+        "This file type isn't supported. Please upload a PDF, image, Word, "
+        "Excel, CSV, text, or scanned document."
+    )

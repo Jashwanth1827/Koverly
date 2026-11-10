@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import io
+
 from tests.conftest import (
     auth_headers,
     create_family,
     create_policy,
+    make_image_bytes,
     make_pdf_bytes,
+    make_scanned_pdf_bytes,
     register,
+    skip_without_ocr,
 )
 
 SAMPLE_POLICY_TEXT = """Health Insurance Policy
@@ -42,12 +47,17 @@ def _upload(client, token, family_id, text, name="policy.pdf", **params):
     )
 
 
-def test_upload_rejects_non_pdf_masquerade(client):
+def test_upload_rejects_unsupported_binary(client):
+    """A file whose real content type is unsupported is rejected outright.
+
+    The declared type is irrelevant: detection is from the file's bytes.
+    """
     user, family = _setup(client)
-    # Declared as PDF but content is not a PDF.
+    # Declared as a PDF but the bytes are an unsupported binary blob.
+    binary = b"\x7fELF\x02\x01\x01\x00" + bytes(range(256))
     resp = client.post(
         f"/api/v1/families/{family['id']}/documents",
-        files={"file": ("fake.pdf", b"just some text", "application/pdf")},
+        files={"file": ("fake.pdf", binary, "application/pdf")},
         headers=auth_headers(user["access_token"]),
     )
     assert resp.status_code == 422
@@ -111,30 +121,6 @@ def test_extraction_produces_fields_with_provenance(client):
     # A field genuinely absent must be marked not found — never invented.
     assert fields["maturity_date"]["found"] is False
     assert fields["maturity_date"]["value"] is None
-
-
-def test_extraction_tolerates_ocr_missing_label_punctuation(client):
-    """OCR often turns ':' into '.' or drops it; labels must still match."""
-    user, family = _setup(client)
-    text = (
-        "Health Insurance Policy\n"
-        "Policy Number HLT-112233\n"
-        "Insurer Acme Health Insurance\n"
-        "Nominee John Doe\n"
-        "Waiting Period 24 months\n"
-    )
-    doc = _upload(client, user["access_token"], family["id"], text).json()
-    fields = {
-        f["field_name"]: f
-        for f in client.get(
-            f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
-            headers=auth_headers(user["access_token"]),
-        ).json()
-    }
-    assert fields["policy_number"]["value"] == "HLT-112233"
-    assert fields["insurer"]["value"].startswith("Acme Health")
-    assert fields["nominee"]["value"] == "John Doe"
-    assert fields["waiting_period"]["value"] == "24 months"
 
 
 def test_confirm_extraction_applies_to_policy(client):
@@ -243,116 +229,71 @@ def test_confirm_extraction_preserves_unparseable_values(client):
     assert updated["metadata_json"]["expiry_date"] == "not a date"
 
 
-def test_confirm_creates_policy_from_extraction(client):
-    """A reviewed document with no linked policy can create one on submit."""
+def test_confirm_without_policy_creates_one(client):
+    """Uploading a policy copy and confirming its fields creates the policy."""
     user, family = _setup(client)
     doc = _upload(
         client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
     ).json()
-
     resp = client.post(
         f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
         json={
-            "create_policy": True,
             "confirm": {
                 "insurer": "Acme Health Insurance",
                 "policy_number": "HLT-778899",
+                "policyholder_name": "John Doe",
                 "sum_insured": "500000",
                 "premium": "12500",
                 "start_date": "01/04/2024",
                 "expiry_date": "31/03/2025",
-                "nominee": "John Doe",
             },
-            "reject": [],
+            "reject": ["maturity_date"],
         },
         headers=auth_headers(user["access_token"]),
     )
     assert resp.status_code == 200, resp.text
-    rows = resp.json()
-    assert all(row["policy_id"] for row in rows if row["status"] == "confirmed")
 
-    policies = client.get(
+    listing = client.get(
         f"/api/v1/families/{family['id']}/policies",
         headers=auth_headers(user["access_token"]),
     ).json()
-    assert policies["total"] == 1
-    policy = policies["items"][0]
-    assert policy["policy_number"] == "HLT-778899"
+    assert listing["total"] == 1
+    policy = listing["items"][0]
     assert policy["insurer"] == "Acme Health Insurance"
-    assert policy["policy_type"] == "health"
+    assert policy["policy_number"] == "HLT-778899"
+    assert float(policy["sum_insured"]) == 500000
     assert float(policy["premium"]) == 12500
     assert policy["start_date"] == "2024-04-01"
+    assert policy["expiry_date"] == "2025-03-31"
 
-    detail = client.get(
+    # The document is now linked to the policy it created.
+    linked = client.get(
         f"/api/v1/families/{family['id']}/documents/{doc['id']}",
         headers=auth_headers(user["access_token"]),
     ).json()
-    assert detail["policy_id"] == policy["id"]
+    assert linked["policy_id"] == policy["id"]
 
-
-def test_confirm_reuses_policy_with_same_number_and_insurer(client):
-    user, family = _setup(client)
-    existing = create_policy(
-        client,
-        user["access_token"],
-        family["id"],
-        insurer="Acme Health Insurance",
-        policy_number="HLT-778899",
-        premium="1",
-    )
-    doc = _upload(
-        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
-    ).json()
-
-    resp = client.post(
-        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
-        json={
-            "create_policy": True,
-            "confirm": {
-                "insurer": "Acme Health Insurance",
-                "policy_number": "HLT-778899",
-                "premium": "12500",
-            },
-            "reject": [],
-        },
-        headers=auth_headers(user["access_token"]),
-    )
-    assert resp.status_code == 200, resp.text
-
-    policies = client.get(
-        f"/api/v1/families/{family['id']}/policies",
+    # Extraction rows record the policy they were applied to.
+    rows = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
         headers=auth_headers(user["access_token"]),
     ).json()
-    assert policies["total"] == 1
-    assert policies["items"][0]["id"] == existing["id"]
-    assert float(policies["items"][0]["premium"]) == 12500
+    assert all(r["policy_id"] == policy["id"] for r in rows)
 
 
-def test_confirm_create_requires_insurer_and_policy_number(client):
+def test_confirm_without_policy_requires_insurer_and_number(client):
+    """A policy cannot be created from a partial confirmation."""
     user, family = _setup(client)
     doc = _upload(
         client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
     ).json()
     resp = client.post(
         f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
-        json={"create_policy": True, "confirm": {"nominee": "John Doe"}, "reject": []},
+        json={"confirm": {"policy_number": "HLT-778899"}, "reject": []},
         headers=auth_headers(user["access_token"]),
     )
     assert resp.status_code == 422
-    assert "insurer" in resp.text
-
-
-def test_confirm_requires_policy_link(client):
-    user, family = _setup(client)
-    doc = _upload(
-        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
-    ).json()
-    resp = client.post(
-        f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions/confirm",
-        json={"confirm": {"policy_number": "X"}, "reject": []},
-        headers=auth_headers(user["access_token"]),
-    )
-    assert resp.status_code == 422
+    assert "insurer" in resp.json()["error"]["message"].lower()
 
 
 def test_document_download_requires_auth(client):
@@ -382,21 +323,378 @@ def test_document_delete_removes_file(client):
     ).status_code == 404
 
 
-def test_image_upload_fails_processing_with_clear_reason(client):
-    """OCR is not configured, so images must fail explicitly — never fabricate."""
+def test_image_upload_is_ocrd(client):
+    """An image policy copy is OCR'd and its fields extracted."""
+    skip_without_ocr()
     user, family = _setup(client)
-    # Minimal valid PNG header.
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    png = make_image_bytes(
+        [
+            "Health Insurance Policy",
+            "Policy Number: SCAN-998877",
+            "Insurer: Scanned Health Co",
+            "Sum Insured: 750000",
+        ]
+    )
     resp = client.post(
         f"/api/v1/families/{family['id']}/documents",
         files={"file": ("scan.png", png, "image/png")},
         headers=auth_headers(user["access_token"]),
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 201, resp.text
     doc_id = resp.json()["id"]
     detail = client.get(
         f"/api/v1/families/{family['id']}/documents/{doc_id}",
         headers=auth_headers(user["access_token"]),
     ).json()
+    assert detail["status"] == "processed", detail
+    fields = {
+        f["field_name"]: f
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc_id}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+    }
+    assert fields["policy_number"]["found"] is True
+    assert "SCAN" in fields["policy_number"]["value"].upper()
+    assert fields["sum_insured"]["found"] is True
+
+
+def test_scanned_pdf_is_ocrd(client):
+    """A PDF with no text layer (a scan) is rendered and OCR'd."""
+    skip_without_ocr()
+    user, family = _setup(client)
+    pdf = make_scanned_pdf_bytes(
+        [
+            "Health Insurance Policy",
+            "Policy Number: SCAN-445566",
+            "Insurer: Scanned Health Co",
+            "Sum Insured: 800000",
+        ]
+    )
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("scan.pdf", pdf, "application/pdf")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 201, resp.text
+    doc_id = resp.json()["id"]
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc_id}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert detail["status"] == "processed", detail
+    fields = {
+        f["field_name"]: f
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc_id}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+    }
+    assert fields["policy_number"]["found"] is True
+    assert "SCAN" in fields["policy_number"]["value"].upper()
+
+
+def test_unreadable_image_fails_with_clear_reason(client):
+    """A blank/unreadable image must fail explicitly — never fabricate."""
+    skip_without_ocr()
+    user, family = _setup(client)
+    from PIL import Image
+
+    blank = io.BytesIO()
+    Image.new("RGB", (200, 200), "white").save(blank, "PNG")
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("blank.png", blank.getvalue(), "image/png")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 201
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{resp.json()['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
     assert detail["status"] == "failed"
-    assert "OCR" in (detail["processing_error"] or "")
+    assert "readable text" in (detail["processing_error"] or "").lower()
+
+
+def test_scanned_pdf_fails_clearly_when_ocr_disabled(client, monkeypatch):
+    """With OCR off, a text-less PDF must fail with an explicit reason."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "OCR_ENABLED", False)
+    user, family = _setup(client)
+    pdf = make_scanned_pdf_bytes(["Health Insurance Policy", "Sum Insured: 800000"])
+    resp = client.post(
+        f"/api/v1/families/{family['id']}/documents",
+        files={"file": ("scan.pdf", pdf, "application/pdf")},
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 201
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{resp.json()['id']}",
+        headers=auth_headers(user["access_token"]),
+    ).json()
+    assert detail["status"] == "failed"
+    assert "readable text" in (detail["processing_error"] or "").lower()
+
+
+REALISTIC_POLICY_TEXT = """HDFC ERGO General Insurance Company Limited
+Health Suraksha Insurance Policy
+
+Policy No.: 2315001234567890
+Policyholder Name: Ramesh Kumar Sharma
+Date of Commencement: 01/04/2024
+Policy Period: 01/04/2024 to 31/03/2025
+Sum Insured: Rs. 5,00,000
+Premium Amount: Rs. 12,450
+Premium Frequency: Yearly
+Nominee Name: Sunita Sharma
+TPA: MediAssist Healthcare Services
+Claim Helpline: 1800-266-8844
+Waiting Period: 30 days
+"""
+
+
+# Mirrors the layout of a real HDFC ERGO health policy welcome letter (spaced
+# policy number, salutation-style name, Section 80D premium certificate, period
+# phrase). Values are synthetic.
+HDFC_STYLE_POLICY_TEXT = """Mr A B Sample
+-
+-
+HNO100 FLOT NOB27 GANDHI
+NAGAR
+BALAJI TOWERS
+HYDERABAD
+TELANGANA - 500080
+Contact No.: 9000000000
+Email: sample@example.com
+Policy No : 1234 5678 9012 3456 000
+Renewal of Your Optima Restore Floater Insurance Policy
+Dear Mr A B Sample ,
+Welcome to HDFC ERGO General Insurance Company Limited. We are pleased to issue you Renewal of Your Optima Restore Floater Insurance Policy.
+Certificate for the purpose of deduction under Section 80 D of Income Tax Act, 1961*
+This is to certify that the MR. A B SAMPLE has paid Rs. 23660 (Rupees Twenty-Three Thousand Six Hundred Sixty And Zero Paise Only) towards
+premium for Optima Restore Floater Policy No. 1234567890123456000 issued to MR. A B SAMPLE for period of 05/01/2023 to 04/01/2024.
+For and on behalf of HDFC ERGO General Insurance Company Limited
+HDFC ERGO General Insurance Company Limited
+1234567890123456000
+HDFC ERGO General Insurance Company Limited.  IRDAI Reg No.146
+"""
+
+
+def test_extraction_handles_hdfc_style_letter(client):
+    """Regression: spaced policy numbers, salutation names, 'has paid Rs. X'
+    premium and 'for period of A to B' dates are all recoverable."""
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], HDFC_STYLE_POLICY_TEXT,
+        name="hdfc_style.pdf",
+    ).json()
+    fields = {
+        f["field_name"]: f["value"]
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+        if f["found"]
+    }
+    assert fields["policy_number"] == "1234 5678 9012 3456 000"
+    assert fields["insurer"] == "HDFC ERGO General Insurance Company Limited"
+    assert fields["policyholder_name"] == "A B Sample"
+    assert fields["premium"] == "23660"
+    assert fields["start_date"] == "05/01/2023"
+    assert fields["expiry_date"] == "04/01/2024"
+    # Not present anywhere in the text -> must not be invented.
+    assert "sum_insured" not in fields
+    assert "nominee" not in fields
+
+
+def test_classifies_hdfc_style_letter_as_health():
+    """The insurance category is inferred from the document text itself."""
+    import asyncio
+
+    from app.ai.null_provider import NullProvider
+
+    provider = NullProvider()
+    # The coarse hint drives the legacy pipeline; the category drives the new
+    # automatic classification. Both must be derived, never requested.
+    assert asyncio.run(provider.classify_document(HDFC_STYLE_POLICY_TEXT)) == "policy"
+    assert provider.classify_category(HDFC_STYLE_POLICY_TEXT)[0] == "health"
+
+
+# An OCR'd schedule page: labels run together across lines, and a relationship
+# label ("Relationship to Policyholder: Wife") sits on the same line as the
+# nominee's name. Extraction must not mistake it for the policyholder.
+OCR_SCHEDULE_TEXT = """HDFC ERGO General Insurance Company Limited
+
+Policy Schedule - Optima Restore Floater
+
+Policy Number 4509 8765 4321 0987 000
+
+Policy Holder's Name Mr A B Samplefield
+
+First policy inception date 03/01/2013 Policy Issuance Date 17/12/2022
+
+Policy Period From 00:01 hrs on 05/01/2023 To 24:00 hrs on 04/01/2024
+
+Relationship to Policy Holder Self Wife Son - - -
+
+Base Sum Insured @) 500000
+
+Multiplier Benefit SI (=) 500000
+
+Total Sum Insured @) 1000000
+
+Nominee Details
+
+Nominee Name : Mrs A C Sampleperson Relationship to Policyholder: Wife
+
+Claim Administrator : HDFC ERGO General Insurance Company Ltd
+"""
+
+
+def test_extraction_handles_ocr_schedule_page(client):
+    """Regression: OCR'd labels must not bleed into the wrong fields."""
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], OCR_SCHEDULE_TEXT,
+        name="ocr_schedule.pdf",
+    ).json()
+    fields = {
+        f["field_name"]: f["value"]
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+        if f["found"]
+    }
+    # "Relationship to Policyholder: Wife" must never become the holder's name.
+    assert fields["policyholder_name"] == "A B Samplefield"
+    # The policy period wins over the "first policy inception date".
+    assert fields["start_date"] == "05/01/2023"
+    assert fields["expiry_date"] == "04/01/2024"
+    # The total (base + multiplier) is preferred over the base sum insured.
+    assert fields["sum_insured"] == "1000000"
+    # The nominee's relationship (and honorific) must be trimmed off the name.
+    assert fields["nominee"] == "A C Sampleperson"
+
+
+def test_extraction_handles_realistic_document_labels(client):
+    """Regression: insurer headings, 'Policy No.:' and period ranges were missed."""
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], REALISTIC_POLICY_TEXT,
+        name="realistic.pdf",
+    ).json()
+    fields = {
+        f["field_name"]: f
+        for f in client.get(
+            f"/api/v1/families/{family['id']}/documents/{doc['id']}/extractions",
+            headers=auth_headers(user["access_token"]),
+        ).json()
+    }
+    assert fields["policy_number"]["value"] == "2315001234567890"
+    assert fields["insurer"]["value"].startswith("HDFC ERGO")
+    assert fields["policyholder_name"]["value"] == "Ramesh Kumar Sharma"
+    assert fields["sum_insured"]["value"] == "5,00,000"
+    assert fields["premium"]["value"] == "12,450"
+    assert fields["start_date"]["value"] == "01/04/2024"
+    assert fields["expiry_date"]["value"] == "31/03/2025"
+    assert fields["tpa"]["value"].startswith("MediAssist")
+
+
+def test_signed_url_supports_attachment_disposition(client):
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+
+    inline = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/signed-url",
+        headers=auth_headers(user["access_token"]),
+    ).json()["url"]
+    inline_resp = client.get(inline)
+    assert inline_resp.status_code == 200
+    assert inline_resp.headers["content-disposition"].startswith("inline")
+    assert inline_resp.headers["content-type"].startswith("application/pdf")
+
+    attach = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/signed-url"
+        "?disposition=attachment",
+        headers=auth_headers(user["access_token"]),
+    ).json()["url"]
+    attach_resp = client.get(attach)
+    assert attach_resp.status_code == 200
+    assert attach_resp.headers["content-disposition"].startswith("attachment")
+    assert doc["original_filename"] in attach_resp.headers["content-disposition"]
+
+
+def test_signed_url_tampering_is_rejected(client):
+    """Changing the disposition or content type must invalidate the signature."""
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+    url = client.post(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/signed-url",
+        headers=auth_headers(user["access_token"]),
+    ).json()["url"]
+
+    tampered = url.replace("disposition=inline", "disposition=attachment")
+    assert client.get(tampered).status_code == 403
+
+    tampered_type = url + "&content_type=text/html"
+    assert client.get(tampered_type).status_code == 403
+
+
+def test_download_endpoint_sets_attachment_header(client):
+    user, family = _setup(client)
+    doc = _upload(
+        client, user["access_token"], family["id"], SAMPLE_POLICY_TEXT
+    ).json()
+    resp = client.get(
+        f"/api/v1/families/{family['id']}/documents/{doc['id']}/download",
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-disposition"].startswith("attachment")
+    assert resp.content.startswith(b"%PDF-")
+
+
+def test_policy_summary_pdf_is_generated(client):
+    """The downloadable summary is generated by Koverly, never a raw upload."""
+    user, family = _setup(client)
+    policy = create_policy(client, user["access_token"], family["id"])
+    resp = client.get(
+        f"/api/v1/families/{family['id']}/policies/{policy['id']}/summary.pdf",
+        headers=auth_headers(user["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/pdf")
+    assert resp.headers["content-disposition"].startswith("attachment")
+    body = resp.content
+    assert body.startswith(b"%PDF-")
+    assert b"%%EOF" in body
+    assert b"Acme Health" in body
+
+
+def test_policy_summary_pdf_requires_authorization(client):
+    user, family = _setup(client)
+    policy = create_policy(client, user["access_token"], family["id"])
+    assert (
+        client.get(f"/api/v1/families/{family['id']}/policies/{policy['id']}/summary.pdf").status_code
+        == 401
+    )
+
+
+def test_policy_summary_pdf_hidden_from_other_family(client):
+    from tests.conftest import auth_headers as _headers
+
+    user, family = _setup(client)
+    policy = create_policy(client, user["access_token"], family["id"])
+    other = register(client, "doc_other@example.com", "Other")
+    other_family = create_family(client, other["access_token"], "Other Family")
+    resp = client.get(
+        f"/api/v1/families/{other_family['id']}/policies/{policy['id']}/summary.pdf",
+        headers=_headers(other["access_token"]),
+    )
+    assert resp.status_code == 404

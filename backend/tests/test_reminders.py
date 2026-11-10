@@ -36,7 +36,7 @@ def test_create_reminder_with_offsets(client):
 
 
 def test_reminder_offsets_validated(client):
-    user, family, policy = _setup(client)
+    user, family, _policy = _setup(client)
     resp = client.post(
         f"/api/v1/families/{family['id']}/reminders",
         json={
@@ -51,7 +51,7 @@ def test_reminder_offsets_validated(client):
 
 
 def test_reminder_lifecycle(client):
-    user, family, policy = _setup(client)
+    user, family, _policy = _setup(client)
     due = (date.today() + timedelta(days=10)).isoformat()
     reminder = client.post(
         f"/api/v1/families/{family['id']}/reminders",
@@ -119,7 +119,7 @@ def test_reminder_calculation_offsets_due(client):
     from app.models.enums import ReminderStatus
     from app.services import reminder_service
 
-    user, family, policy = _setup(client)
+    user, family, _policy = _setup(client)
     due = (date.today() + timedelta(days=7)).isoformat()
     reminder = client.post(
         f"/api/v1/families/{family['id']}/reminders",

@@ -1,10 +1,10 @@
 {
   "insurer": "LIFE INSURANCE CORPORATION OF INDIA",
   "policy_number": "LIC-XXXX-123456",
-  "policyholder_name": "MR XXXX XXXXX",
+  "policyholder_name": "XXXX XXXXX",
   "start_date": "15/03/2016",
   "maturity_date": "15/03/2036",
   "sum_insured": "1500000",
   "premium": "78540",
-  "nominee": "MRS XXXX XXXXX"
+  "nominee": "XXXX XXXXX"
 }

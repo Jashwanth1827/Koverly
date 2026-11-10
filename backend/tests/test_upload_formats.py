@@ -17,7 +17,7 @@ Insurer: Format Health Insurance
 Policy Holder: Format User
 Sum Insured: 750000
 Premium: 15000
-Nominee: Format Nominee
+Nominee: Rita Format
 """
 
 
@@ -193,7 +193,7 @@ def test_txt_upload_extracts_fields(client):
         ).json()
     }
     assert fields["policy_number"]["value"] == "HLT-901234"
-    assert fields["nominee"]["value"] == "Format Nominee"
+    assert fields["nominee"]["value"] == "Rita Format"
 
 
 def test_upload_rejects_binary_declared_as_text(client):
@@ -222,12 +222,12 @@ def test_upload_rejects_unknown_type(client):
     assert resp.status_code == 422
 
 
-def test_zip_named_as_xlsx_is_treated_as_docx(client):
-    """A generic zip claiming xlsx should not crash the pipeline.
+def test_plain_zip_claiming_xlsx_is_rejected(client):
+    """A generic zip claiming to be a workbook must not enter the pipeline.
 
-    The declared OOXML type routes to the spreadsheet reader; a plain zip that
-    is not a real workbook fails processing with a clear message rather than a
-    server error.
+    Content sniffing inspects the OOXML parts, so a zip that is neither a Word
+    document nor a real spreadsheet is rejected at upload with a clear message
+    instead of failing processing later.
     """
     user, family = _setup(client)
     buf = io.BytesIO()
@@ -241,11 +241,5 @@ def test_zip_named_as_xlsx_is_treated_as_docx(client):
         "fake.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    assert resp.status_code == 201, resp.text
-    doc = resp.json()
-    detail = client.get(
-        f"/api/v1/families/{family['id']}/documents/{doc['id']}",
-        headers=auth_headers(user["access_token"]),
-    ).json()
-    assert detail["status"] == "failed"
-    assert detail["processing_error"]
+    assert resp.status_code == 422
+    assert "supported" in resp.json()["error"]["message"].lower()

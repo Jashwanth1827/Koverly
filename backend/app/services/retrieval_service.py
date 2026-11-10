@@ -22,7 +22,7 @@ from app.utils.text import lexical_overlap
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0 or nb == 0:
@@ -71,7 +71,7 @@ async def retrieve(
     scored.sort(key=lambda x: x[0], reverse=True)
 
     results: list[SourceRef] = []
-    for score, emb, lex, chunk, filename in scored[:top_k]:
+    for score, _emb, _lex, chunk, filename in scored[:top_k]:
         if score <= 0:
             continue
         results.append(

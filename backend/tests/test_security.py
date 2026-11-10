@@ -26,7 +26,7 @@ def _two_users(client):
 
 
 def test_user_cannot_read_other_family(client):
-    a, b, fa, fb = _two_users(client)
+    a, _b, _fa, fb = _two_users(client)
     resp = client.get(
         f"/api/v1/families/{fb['id']}", headers=auth_headers(a["access_token"])
     )
@@ -35,7 +35,7 @@ def test_user_cannot_read_other_family(client):
 
 
 def test_user_cannot_list_other_family_members(client):
-    a, b, fa, fb = _two_users(client)
+    a, _b, _fa, fb = _two_users(client)
     resp = client.get(
         f"/api/v1/families/{fb['id']}/members",
         headers=auth_headers(a["access_token"]),
@@ -54,7 +54,7 @@ def test_user_cannot_access_other_policy(client):
 
 
 def test_user_cannot_create_policy_in_other_family(client):
-    a, b, fa, fb = _two_users(client)
+    a, _b, _fa, fb = _two_users(client)
     resp = client.post(
         f"/api/v1/families/{fb['id']}/policies",
         json={
@@ -112,7 +112,7 @@ def test_user_cannot_retrieve_other_family_chunks_via_assistant(client):
 
 
 def test_assistant_rejects_cross_family_query(client):
-    a, b, fa, fb = _two_users(client)
+    a, _b, _fa, fb = _two_users(client)
     resp = client.post(
         "/api/v1/assistant/ask",
         json={"family_id": fb["id"], "question": "summary"},
@@ -193,7 +193,7 @@ def test_assistant_search_tool_is_family_scoped(client):
 
 
 def test_viewer_cannot_write(client):
-    a, b, fa, fb = _two_users(client)
+    a, b, fa, _fb = _two_users(client)
     # Link user B into family A as a viewer.
     invite = client.post(
         f"/api/v1/families/{fa['id']}/invites",
@@ -232,7 +232,7 @@ def test_viewer_cannot_write(client):
 
 
 def test_viewer_cannot_read_audit_logs(client):
-    a, b, fa, fb = _two_users(client)
+    a, b, fa, _fb = _two_users(client)
     client.post(
         f"/api/v1/families/{fa['id']}/invites",
         json={"email": "user_b@example.com", "role": "viewer"},
@@ -246,7 +246,7 @@ def test_viewer_cannot_read_audit_logs(client):
 
 
 def test_signed_url_required_for_anonymous_file_access(client):
-    a, b, fa, fb = _two_users(client)
+    a, _b, fa, _fb = _two_users(client)
     pdf = make_pdf_bytes("Policy Number: XYZ-1")
     up = client.post(
         f"/api/v1/families/{fa['id']}/documents",

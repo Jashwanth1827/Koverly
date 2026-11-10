@@ -400,12 +400,18 @@ def record_lookup_term(question: str) -> str | None:
 # Emergency mode
 # --------------------------------------------------------------------------- #
 _CLAIM_INSTRUCTIONS = [
-    "Contact the insurer or TPA helpline listed on the policy before treatment "
-    "where possible, and inform them of the hospital admission.",
-    "For cashless admission, present the health card and policy number at the "
-    "hospital insurance desk.",
-    "For reimbursement, keep original bills, discharge summary, prescriptions, "
-    "and payment receipts.",
+    (
+        "Contact the insurer or TPA helpline listed on the policy before treatment "
+        "where possible, and inform them of the hospital admission."
+    ),
+    (
+        "For cashless admission, present the health card and policy number at the "
+        "hospital insurance desk."
+    ),
+    (
+        "For reimbursement, keep original bills, discharge summary, prescriptions, "
+        "and payment receipts."
+    ),
     "Notify the insurer within the timeframe stated in the policy.",
 ]
 

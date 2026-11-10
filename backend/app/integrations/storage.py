@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
+from urllib.parse import urlencode
 
 from app.core.config import settings
 from app.core.errors import AppError
@@ -44,17 +47,54 @@ class StorageBackend(ABC):
     async def delete(self, key: str) -> None: ...
 
     @abstractmethod
-    def signed_url(self, key: str, ttl_seconds: int | None = None) -> str: ...
+    def signed_url(
+        self,
+        key: str,
+        ttl_seconds: int | None = None,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+        filename: str | None = None,
+    ) -> str: ...
 
     @abstractmethod
-    def verify_signed_url(self, key: str, expires: int, signature: str) -> bool: ...
+    def verify_signed_url(
+        self,
+        key: str,
+        expires: int,
+        signature: str,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+    ) -> bool: ...
 
 
-def _sign(key: str, expires: int) -> str:
-    msg = f"{key}:{expires}".encode()
+def _sign(key: str, expires: int, disposition: str, content_type: str) -> str:
+    msg = f"{key}:{expires}:{disposition}:{content_type}".encode()
     return hmac.new(
         settings.SECRET_KEY.encode(), msg, hashlib.sha256
     ).hexdigest()
+
+
+def sanitize_filename(name: str) -> str:
+    """Return a header-safe filename (no quotes/CR/LF/path separators)."""
+    base = os.path.basename(name or "document")
+    cleaned = re.sub(r'[^A-Za-z0-9._\- ]+', "_", base).strip().strip(".")
+    return cleaned[:200] or "document"
+
+
+def content_disposition(disposition: str, filename: str) -> str:
+    """Build a safe Content-Disposition value.
+
+    ``inline`` lets the browser preview the file (used for in-app preview);
+    ``attachment`` forces a download with the original filename.
+    """
+    kind = "inline" if disposition == "inline" else "attachment"
+    safe = sanitize_filename(filename)
+    # RFC 5987 form keeps non-ASCII names intact; the plain form is a fallback.
+    from urllib.parse import quote
+
+    return f"{kind}; filename=\"{safe}\"; filename*=UTF-8''{quote(safe)}"
 
 
 class LocalStorage(StorageBackend):
@@ -85,24 +125,48 @@ class LocalStorage(StorageBackend):
         if path.exists():
             path.unlink()
 
-    def signed_url(self, key: str, ttl_seconds: int | None = None) -> str:
+    def signed_url(
+        self,
+        key: str,
+        ttl_seconds: int | None = None,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+        filename: str | None = None,
+    ) -> str:
         expires = int(time.time()) + (ttl_seconds or settings.SIGNED_URL_TTL_SECONDS)
-        signature = _sign(key, expires)
-        return f"/api/v1/documents/file?key={key}&expires={expires}&signature={signature}"
+        signature = _sign(key, expires, disposition, content_type)
+        params = {
+            "key": key,
+            "expires": expires,
+            "signature": signature,
+            "disposition": disposition,
+            "content_type": content_type,
+        }
+        if filename:
+            params["filename"] = filename
+        return f"/api/v1/documents/file?{urlencode(params)}"
 
-    def verify_signed_url(self, key: str, expires: int, signature: str) -> bool:
+    def verify_signed_url(
+        self,
+        key: str,
+        expires: int,
+        signature: str,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+    ) -> bool:
         if expires < int(time.time()):
             return False
-        return hmac.compare_digest(_sign(key, expires), signature)
+        return hmac.compare_digest(_sign(key, expires, disposition, content_type), signature)
 
 
 class S3Storage(StorageBackend):
     """Private S3-compatible storage.
 
-    Uses boto3 when available. It only works against a private bucket and
-    generates short-lived presigned GET URLs. Writes are performed server-
-    side over TLS. If boto3 is not installed or required settings are missing,
-    the backend fails loudly rather than silently storing data insecurely.
+    A real implementation should use ``aioboto3``/``boto3`` with presigned
+    URLs and server-side encryption. Until configured this backend refuses to
+    operate rather than falling back to something insecure.
     """
 
     def __init__(self) -> None:
@@ -110,74 +174,38 @@ class S3Storage(StorageBackend):
             raise StorageError(
                 "S3 storage selected but STORAGE_S3_BUCKET is not configured."
             )
-        try:
-            import boto3
-        except ImportError as exc:  # pragma: no cover - environment dependent
-            raise StorageError(
-                "boto3 is required for S3 storage. Install with: pip install boto3"
-            ) from exc
-
         self.bucket = settings.STORAGE_S3_BUCKET
-        self.region = settings.STORAGE_S3_REGION or None
-        session = boto3.session.Session(region_name=self.region)
-        self.client = session.client("s3")
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
-        import asyncio
-
-        def _put() -> None:
-            self.client.put_object(
-                Bucket=self.bucket,
-                Key=key,
-                Body=data,
-                ContentType=content_type,
-                ServerSideEncryption="AES256",
-            )
-
-        try:
-            await asyncio.to_thread(_put)
-        except Exception as exc:
-            raise StorageError("Failed to upload document to S3.") from exc
+        raise StorageError("S3 backend is not implemented in this build.")
 
     async def get(self, key: str) -> bytes:
-        import asyncio
-
-        def _get() -> bytes:
-            resp = self.client.get_object(Bucket=self.bucket, Key=key)
-            body = resp["Body"]
-            return body.read()
-
-        try:
-            return await asyncio.to_thread(_get)
-        except Exception as exc:
-            raise StorageError("Document file is missing from storage.") from exc
+        raise StorageError("S3 backend is not implemented in this build.")
 
     async def delete(self, key: str) -> None:
-        import asyncio
+        raise StorageError("S3 backend is not implemented in this build.")
 
-        def _delete() -> None:
-            self.client.delete_object(Bucket=self.bucket, Key=key)
+    def signed_url(
+        self,
+        key: str,
+        ttl_seconds: int | None = None,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+        filename: str | None = None,
+    ) -> str:
+        raise StorageError("S3 backend is not implemented in this build.")
 
-        try:
-            await asyncio.to_thread(_delete)
-        except Exception:
-            # Deletion failures must not block the API response.
-            return
-
-    def signed_url(self, key: str, ttl_seconds: int | None = None) -> str:
-        try:
-            return self.client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self.bucket, "Key": key},
-                ExpiresIn=ttl_seconds or settings.SIGNED_URL_TTL_SECONDS,
-            )
-        except Exception as exc:
-            raise StorageError("Failed to generate storage URL.") from exc
-
-    def verify_signed_url(self, key: str, expires: int, signature: str) -> bool:
-        # S3 presigned URLs carry their own signature and expiry; verification
-        # is handled by S3. The local signed-URL scheme does not apply here.
-        return True
+    def verify_signed_url(
+        self,
+        key: str,
+        expires: int,
+        signature: str,
+        *,
+        disposition: str = "inline",
+        content_type: str = "application/octet-stream",
+    ) -> bool:
+        return False
 
 
 _storage: StorageBackend | None = None
@@ -204,36 +232,8 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-# Declared content types that carry no reliable magic bytes. They are only
-# accepted when the client declares them and the payload looks like text, so a
-# renamed binary cannot slip through.
-_TEXT_CONTENT_TYPES: dict[str, tuple[str, ...]] = {
-    "text/markdown": (".md", ".markdown"),
-    "text/csv": (".csv",),
-    "text/plain": (".txt", ".text"),
-}
-
-
-def _looks_like_text(data: bytes) -> bool:
-    """Heuristic: reject obvious binaries, accept decodable text.
-
-    A NUL byte is a strong binary signal. UTF-8/UTF-16 decoding with a
-    tolerance for a few malformed bytes avoids false negatives on accented
-    policy text.
-    """
-    if b"\x00" in data[:8192] and not data[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return False
-    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
-        try:
-            data.decode(encoding)
-            return True
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return False
-
-
 def sniff_content_type(data: bytes, declared: str) -> str | None:
-    """Validate magic bytes against the declared content type.
+    """Detect the real content type from magic bytes.
 
     Returns the detected type or ``None`` if the bytes are not a supported
     file type. This prevents content-type spoofing of uploads.
@@ -244,22 +244,53 @@ def sniff_content_type(data: bytes, declared: str) -> str | None:
         return "image/jpeg"
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"{\\rtf"):
+        return "application/rtf"
+    # OLE compound file (legacy .doc, and older .xls/.ppt).
     if data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
-        # OLE2 compound file: legacy .doc, .xls (and .ppt).
-        return "application/vnd.ms-excel"
-    if data.startswith(b"PK\x03\x04") or data.startswith(b"PK\x05\x06"):
-        # ZIP container: OOXML documents share the same signature, so the
-        # declared type disambiguates Word from Excel.
-        normalized = declared.split(";")[0].strip().lower()
-        if normalized in {
-            "application/vnd.openxmlformats-officedocument"
-            ".spreadsheetml.sheet",
-            "application/vnd.ms-excel",
-        }:
-            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        return (
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
-    if declared.lower() in _TEXT_CONTENT_TYPES and _looks_like_text(data):
-        return declared.split(";")[0].strip().lower()
+        return "application/msword"
+    # DOCX/XLSX/PPTX are ZIP containers; accept the parts we can read.
+    if data.startswith(b"PK\x03\x04"):
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                names = set(archive.namelist())
+        except Exception:  # noqa: BLE001
+            return None
+        if "word/document.xml" in names:
+            return (
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            )
+        if "xl/workbook.xml" in names:
+            return (
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            )
+        return None
+    # Plain text: no magic bytes, so validate that it decodes and looks textual.
+    # CSV and Markdown declare themselves; the bytes must still look textual so
+    # a renamed binary cannot slip through.
+    if declared in {"text/plain", "text/csv", "text/markdown"} and _looks_like_text(
+        data
+    ):
+        return declared
     return None
+
+
+def _looks_like_text(data: bytes) -> bool:
+    sample = data[:4096]
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    # Require a reasonable proportion of printable characters.
+    printable = sum(1 for b in sample if 32 <= b < 127 or b in (9, 10, 13))
+    return printable / len(sample) > 0.9

@@ -112,6 +112,88 @@ class AnswerResult:
 NOT_FOUND_MESSAGE = "I couldn't find that information in your uploaded policy documents."
 
 
+@dataclass
+class CandidateField:
+    """A single extracted value with provenance and evidence state.
+
+    ``evidence`` distinguishes what the document *says* from what was inferred:
+    ``explicitly_found`` (stated in the text), ``inferred`` (derived from other
+    explicit facts), ``uncertain`` (low confidence / partial OCR), or
+    ``not_found``. ``value`` is None whenever the evidence is ``not_found``.
+    """
+
+    field_name: str
+    value: str | None
+    confidence: float = 0.0
+    source_page: int | None = None
+    source_text: str | None = None
+    evidence: str = "not_found"
+
+    def as_dict(self) -> dict:
+        return {
+            "field_name": self.field_name,
+            "value": self.value,
+            "confidence": round(self.confidence, 3),
+            "source_page": self.source_page,
+            "source_text": self.source_text,
+            "evidence": self.evidence,
+        }
+
+
+@dataclass
+class PolicyCandidate:
+    """One policy discovered in a document (a document may hold several)."""
+
+    document_class: str = "insurance_policy"
+    document_class_confidence: float = 0.0
+    category: str = "other"
+    category_confidence: float = 0.0
+    policy_type: str = "other"
+    policy_type_confidence: float = 0.0
+    policy_subtype: str | None = None
+    policy_subtype_confidence: float = 0.0
+    page_start: int | None = None
+    page_end: int | None = None
+    fields: list[CandidateField] = field(default_factory=list)
+    # Dynamic, category-specific extras that did not fit a universal field.
+    category_data: dict[str, str] = field(default_factory=dict)
+
+    def field_map(self) -> dict[str, CandidateField]:
+        return {f.field_name: f for f in self.fields}
+
+
+@dataclass
+class DocumentAnalysis:
+    """The full result of analysing one uploaded document."""
+
+    document_class: str
+    document_class_confidence: float
+    is_insurance: bool
+    message: str
+    candidates: list[PolicyCandidate] = field(default_factory=list)
+    summary: str = ""
+    provider: str = "null"
+    page_count: int | None = None
+
+
+# Universal core fields every policy candidate may carry. Category-specific
+# fields are added dynamically and are never mandatory.
+UNIVERSAL_FIELDS = (
+    "insurer",
+    "policy_number",
+    "policyholder_name",
+    "sum_insured",
+    "premium",
+    "premium_frequency",
+    "start_date",
+    "expiry_date",
+    "renewal_date",
+    "maturity_date",
+    "nominee",
+    "status",
+)
+
+
 class AIProvider(ABC):
     name: str = "abstract"
 
@@ -122,6 +204,45 @@ class AIProvider(ABC):
     @abstractmethod
     async def extract_policy(self, text: str) -> list[ExtractedField]:
         """Extract structured policy fields with provenance."""
+
+    async def classify_insurance(self, text: str) -> tuple[str, float]:
+        """Return the insurance category and a confidence for the text.
+
+        Default: derive from the coarse document hint. Providers that can do
+        better (an LLM, or the deterministic local provider) override this.
+        """
+        hint = await self.classify_document(text)
+        from app.ai.taxonomy import category_for_policy_type
+
+        return category_for_policy_type(hint), 0.5 if hint != "other" else 0.0
+
+    async def extract_candidates(
+        self, text: str, *, page_count: int | None = None
+    ) -> list[PolicyCandidate]:
+        """Extract one or more policy candidates from a document.
+
+        The default wraps ``extract_policy`` so a single-policy result is
+        always produced, even for providers that have not implemented
+        multi-policy segmentation.
+        """
+        fields = await self.extract_policy(text)
+        category, category_conf = await self.classify_insurance(text)
+        return [
+            PolicyCandidate(
+                category=category,
+                category_confidence=category_conf,
+                fields=[
+                    CandidateField(
+                        field_name=f.field_name,
+                        value=f.value,
+                        confidence=f.confidence,
+                        source_page=f.source_page,
+                        evidence="explicitly_found" if f.found else "not_found",
+                    )
+                    for f in fields
+                ],
+            )
+        ]
 
     @abstractmethod
     async def answer_question(
