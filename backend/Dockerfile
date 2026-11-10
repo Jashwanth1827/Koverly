@@ -34,7 +34,10 @@ RUN pip install --no-cache-dir \
     "pytesseract>=0.3.10" \
     "pdf2image>=1.17.0" \
     "Pillow>=10.0.0" \
-    "striprtf>=0.0.26"
+    "striprtf>=0.0.26" \
+    "python-docx>=1.1.0" \
+    "openpyxl>=3.1.0" \
+    "xlrd>=2.0.1"
 
 COPY app ./app
 
