@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import RequestTimer, configure_logging, log_event
 from app.core.scheduler import start_scheduler, stop_scheduler
-from app.db.session import engine, init_models
+from app.db.session import db_connection_hint, engine, init_models
 
 logger = logging.getLogger("koverly")
 
@@ -29,10 +29,11 @@ async def lifespan(_: FastAPI):
         # Surface the database target (password redacted) in one line: an
         # unresolvable host almost always means DATABASE_URL points at a
         # database that no longer exists (free-tier instances expire).
+        url = engine.url.render_as_string(hide_password=True)
         logger.critical(
-            "Startup failed: database unreachable. DATABASE_URL is %s. "
-            "Check that the database exists and this URL points at it.",
-            engine.url.render_as_string(hide_password=True),
+            "Startup failed: database unreachable. DATABASE_URL is %s.%s",
+            url,
+            db_connection_hint(url),
         )
         raise
     log_event(

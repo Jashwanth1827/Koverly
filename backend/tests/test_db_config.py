@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.db.session import build_engine_config
+from app.db.session import build_engine_config, db_connection_hint
 
 _SUPABASE_SESSION = (
     "postgresql://postgres.abcd:pw@aws-0-us-west-1.pooler.supabase.com:5432/postgres"
@@ -88,3 +88,36 @@ def test_transaction_pooler_config_builds_an_engine() -> None:
     engine = create_async_engine(url, **kwargs)
     assert engine.url.query["prepared_statement_cache_size"] == "0"
     assert engine.dialect.name == "postgresql"
+
+
+def test_hint_flags_supabase_direct_host_as_ipv6_only() -> None:
+    hint = db_connection_hint(
+        "postgresql+asyncpg://postgres:pw@db.abcd.supabase.co:5432/postgres"
+    )
+    assert "IPv6" in hint
+    assert "pooler" in hint
+
+
+def test_hint_does_not_mislabel_the_pooler_host() -> None:
+    hint = db_connection_hint(
+        "postgresql+asyncpg://postgres.abcd:pw"
+        "@aws-0-ap-southeast-2.pooler.supabase.com:6543/postgres"
+    )
+    assert "IPv6" not in hint
+    assert hint.startswith(" Check that the database exists")
+
+
+def test_hint_flags_expired_render_database() -> None:
+    hint = db_connection_hint(
+        "postgresql+asyncpg://koverly:pw@dpg-db0moq7avr4c738dveug-a/koverly"
+    )
+    assert "Render" in hint
+    assert "30 days" in hint
+
+
+def test_hint_never_repeats_credentials() -> None:
+    # Callers pass a password-redacted URL; the hint must not add anything.
+    url = "postgresql+asyncpg://u:***@db.abcd.supabase.co:5432/postgres"
+    hint = db_connection_hint(url)
+    assert "***" not in hint
+    assert "u:" not in hint

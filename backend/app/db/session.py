@@ -84,6 +84,27 @@ def build_engine_config(raw_url: str) -> tuple[str, dict[str, Any]]:
     return normalized, engine_kwargs
 
 
+def db_connection_hint(url: str) -> str:
+    """Actionable advice for the most common hosted-Postgres host mistakes.
+
+    Appended to the startup failure log so the operator does not have to
+    decode a raw ``gaierror``. Expects a password-redacted URL.
+    """
+    host = (urlsplit(url).hostname or "").lower()
+    if host.endswith(".supabase.co"):
+        return (
+            " Supabase direct-connection hosts are IPv6-only, which hosts without"
+            " outbound IPv6 cannot reach; use the pooler host instead"
+            " (*.pooler.supabase.com, port 6543 on the free plan)."
+        )
+    if host.startswith("dpg-"):
+        return (
+            " This is a Render Postgres internal hostname; free instances are"
+            " deleted after roughly 30 days."
+        )
+    return " Check that the database exists and this URL points at it."
+
+
 _DATABASE_URL, _ENGINE_KWARGS = build_engine_config(settings.DATABASE_URL)
 
 engine = create_async_engine(

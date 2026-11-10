@@ -37,9 +37,12 @@ services:
         value: production
       - key: SECRET_KEY
         generateValue: true
-      # Set in the dashboard (service → Environment). Supabase "Session pooler"
-      # URI — IPv4, so reachable from Render — e.g.:
-      #   postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+      # Set in the dashboard (service → Environment). Use a Supabase pooler URI
+      # (IPv4, so reachable from Render); on the free plan that is the
+      # Transaction pooler (port 6543) — the app detects it and disables
+      # prepared-statement caching, which transaction pooling requires. The
+      # Session pooler (5432) is Pro-only and needs no special handling.
+      #   postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres
       # The app upgrades plain postgres:// / postgresql:// to asyncpg itself.
       - key: DATABASE_URL
         sync: false

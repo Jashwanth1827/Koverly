@@ -172,13 +172,16 @@ in the Render dashboard.
 #### 1. Create the database (Supabase)
 
 1. **New project** at supabase.com; pick a region close to Render's `oregon` (e.g. **West US**).
-2. **Project Settings → Database → Connection string → Session pooler**, and copy the URI:
-   `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`
-3. Use the **Session pooler** (port `5432`), not the direct connection: newer Supabase projects
-   expose the direct host as IPv6-only, and Render has no outbound IPv6 — startup then fails with
-   `socket.gaierror`. The pooler host is IPv4. The **Transaction pooler** (port `6543`) also
-   works (the app detects it and disables prepared-statement caching), but session mode behaves
-   like a normal Postgres connection and is the default choice for a long-lived server.
+   Cross-continent databases add ~150–250 ms to every query, and a page load issues several.
+2. **Project Settings → Database → Connection string**, and copy a **pooler** URI:
+   `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:<port>/postgres`
+3. Use a **pooler**, not the direct connection: newer Supabase projects expose the direct host as
+   IPv6-only and Render has no outbound IPv6, so startup fails with `socket.gaierror`. Pooler hosts
+   are IPv4.
+   - **Transaction pooler** (port `6543`) — available on every plan, including free. The app
+     detects it and disables both prepared-statement caches, which transaction pooling requires.
+   - **Session pooler** (port `5432`) — Pro plan and above, and behaves like a normal Postgres
+     session. Not required.
 4. If the password contains URL-special characters (`@ : / # ? %`), percent-encode them
    (`@` → `%40`) or choose a letters-and-digits password.
 
@@ -210,6 +213,10 @@ Notes:
 - The container binds nginx to the platform-provided `$PORT`; the API runs internally on `:8000`.
 - `postgres://` / `postgresql://` URLs are rewritten to `postgresql+asyncpg://`, and libpq-only
   query parameters (`sslmode`, `pgbouncer`, `connection_limit`) are dropped automatically.
+- TLS needs no configuration: asyncpg defaults to `sslmode=prefer`, so connections are encrypted
+  whenever the server offers it (Supabase does).
+- The app uses no session-scoped Postgres features (no advisory locks, `LISTEN`/`NOTIFY`, temp
+  tables, or session `SET`), so transactional connection pooling works unchanged.
 - Supabase free projects pause after ~7 days without activity; restore the project from the
   Supabase dashboard if the site has been idle that long.
 - `CORS_ORIGINS` defaults to `RENDER_EXTERNAL_URL` when set.
@@ -228,7 +235,7 @@ All secrets come from environment variables — nothing sensitive is committed. 
 | Variable | Purpose |
 | --- | --- |
 | `SECRET_KEY` | JWT signing key. **Required in production.** |
-| `DATABASE_URL` | SQLite by default; PostgreSQL via `postgresql+asyncpg://…` in production (a Supabase session-pooler URI works as-is). |
+| `DATABASE_URL` | SQLite by default; PostgreSQL via `postgresql+asyncpg://…` in production (a Supabase pooler URI — port 6543 on free, 5432 on Pro — works as-is). |
 | `STORAGE_BACKEND` | `local` or `s3`. |
 | `SIGNED_URL_TTL_SECONDS` | Lifetime of document access URLs. |
 | `OCR_ENABLED` | `true`/`false` — self-hosted Tesseract OCR for scanned copies. |
