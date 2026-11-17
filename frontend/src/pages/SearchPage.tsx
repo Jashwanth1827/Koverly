@@ -5,6 +5,7 @@ import { insightApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
 import { EmptyState, ErrorState, Loading, PageHeader } from "@/components/ui";
 import type { SearchResult } from "@/api/types";
+import { usePageMeta } from "@/lib/pageMeta";
 
 const KIND_LABEL: Record<string, string> = {
   policy: "Policy",
@@ -34,6 +35,7 @@ export function SearchPage() {
   const initial = params.get("q") ?? "";
   const [term, setTerm] = useState(initial);
   const query = initial.trim();
+  usePageMeta(query ? `Search: ${query}` : "Search", "Find policies, claims, documents, and family members.");
 
   useEffect(() => {
     setTerm(params.get("q") ?? "");
@@ -62,14 +64,14 @@ export function SearchPage() {
 
       <form onSubmit={submit} className="mb-6 flex gap-2" role="search">
         <input
-          className="input"
+          className="input min-w-0 flex-1"
           value={term}
           onChange={(e) => setTerm(e.target.value)}
           placeholder="Search policy numbers, insurers, names…"
           aria-label="Search your insurance records"
           autoFocus
         />
-        <button className="btn-primary shrink-0">Search</button>
+        <button type="submit" className="btn-primary shrink-0">Search</button>
       </form>
 
       {!query ? (

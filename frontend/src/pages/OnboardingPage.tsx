@@ -4,6 +4,9 @@ import { documentApi, familyApi } from "@/api/endpoints";
 import { ApiError } from "@/api/client";
 import { useAuth } from "@/context/AuthContext";
 import { StatusBadge } from "@/components/ui";
+import { AppFooter } from "@/components/Footer";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 import { ACCEPTED_UPLOAD_TYPES } from "@/lib/format";
 import type { Document } from "@/api/types";
 
@@ -17,6 +20,8 @@ export function OnboardingPage() {
   const [familyId, setFamilyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  usePageMeta("Set up your family", "Create your family group and start recording your insurance.");
 
   async function createFamily(e: React.FormEvent) {
     e.preventDefault();
@@ -27,6 +32,7 @@ export function OnboardingPage() {
       setFamilyId(family.id);
       await refreshFamilies();
       setActiveFamily(family.id);
+      toast.success("Family created.");
       setStep(1);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not create the family.");
@@ -72,11 +78,10 @@ export function OnboardingPage() {
                 className="input"
                 value={familyName}
                 onChange={(e) => setFamilyName(e.target.value)}
-                placeholder="e.g. The Sharmas"
                 required
               />
             </div>
-            {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+            {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
             <button className="btn-primary w-full" disabled={busy}>
               {busy ? "Creating…" : "Create family"}
             </button>
@@ -116,6 +121,7 @@ export function OnboardingPage() {
           Sign out
         </button>
       </div>
+      <AppFooter />
     </div>
   );
 }
@@ -130,6 +136,7 @@ function OnboardingUpload({
   const [docs, setDocs] = useState<Document[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   async function refresh() {
     try {
@@ -149,6 +156,7 @@ function OnboardingUpload({
       setTimeout(refresh, 800);
       setTimeout(refresh, 2500);
       await refresh();
+      toast.success("Document uploaded. You can review the extracted details later.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not upload the document.");
     } finally {
@@ -195,7 +203,7 @@ function OnboardingUpload({
       )}
 
       <p className="text-xs text-ink-300">
-        Accepted formats: PDF, JPG, PNG. Files are stored privately.
+        Accepted formats: PDF, JPG, PNG, DOCX, XLSX/XLS, CSV, MD, TXT. Files are stored privately.
       </p>
 
       <div className="flex gap-3">

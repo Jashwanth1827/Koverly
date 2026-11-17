@@ -6,6 +6,8 @@ import { useAsync } from "@/lib/useAsync";
 import { ApiError } from "@/api/client";
 import { Disclaimer, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import { ACCEPTED_UPLOAD_TYPES, claimStatusLabel, formatDate, formatPremium } from "@/lib/format";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 import type { ClaimStatus } from "@/api/types";
 
 const NEXT_STATUSES: Record<string, ClaimStatus[]> = {
@@ -26,6 +28,8 @@ export function ClaimDetailPage() {
   const docs = useAsync(() => claimApi.documents(activeFamilyId!, claimId!), [activeFamilyId, claimId]);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const toast = useToast();
+  usePageMeta(claim.data ? `Claim ${claimStatusLabel(claim.data.status)}` : "Claim details");
 
   const canWrite = activeAccess?.role !== "viewer";
 
@@ -37,9 +41,12 @@ export function ClaimDetailPage() {
     setError(null);
     try {
       await claimApi.update(activeFamilyId!, c.id, { status: next });
+      toast.success(`Claim marked ${claimStatusLabel(next).toLowerCase()}.`);
       claim.reload();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not update the claim.");
+      const message = err instanceof ApiError ? err.message : "Could not update the claim.";
+      setError(message);
+      toast.error(message);
     }
   }
 
@@ -48,9 +55,12 @@ export function ClaimDetailPage() {
     setError(null);
     try {
       await claimApi.uploadDocument(activeFamilyId!, c.id, file);
+      toast.success("Document uploaded to this claim.");
       docs.reload();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not upload the document.");
+      const message = err instanceof ApiError ? err.message : "Could not upload the document.";
+      setError(message);
+      toast.error(message);
     } finally {
       setUploading(false);
     }
@@ -131,7 +141,7 @@ export function ClaimDetailPage() {
             <ul className="mt-3 divide-y divide-slate-100">
               {docs.data.map((d) => (
                 <li key={d.id} className="flex items-center justify-between py-3">
-                  <span className="text-sm text-ink-900">{d.original_filename}</span>
+                  <span className="min-w-0 break-all pr-2 text-sm text-ink-900">{d.original_filename}</span>
                   <StatusBadge status={d.status} />
                 </li>
               ))}

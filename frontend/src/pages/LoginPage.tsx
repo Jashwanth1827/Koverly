@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { ApiError } from "@/api/client";
+import { AppFooter } from "@/components/Footer";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 
 export function LoginPage() {
   const { login, register, user } = useAuth();
@@ -12,10 +15,10 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  usePageMeta(mode === "login" ? "Sign in" : "Create account");
 
-  if (user) {
-    navigate("/", { replace: true });
-  }
+  if (user) return <Navigate to="/" replace />;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -24,6 +27,7 @@ export function LoginPage() {
     try {
       if (mode === "login") await login(email, password);
       else await register(email, name, password);
+      toast.success(mode === "login" ? "Signed in successfully." : "Your account is ready.");
       navigate("/", { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Unable to sign in.");
@@ -128,6 +132,7 @@ export function LoginPage() {
           Koverly is an organizational and informational tool. It is not an insurer, lawyer, doctor,
           or financial adviser.
         </p>
+        <AppFooter />
       </div>
     </div>
   );

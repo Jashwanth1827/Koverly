@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError } from "@/api/client";
+import { errorMessage } from "@/api/client";
 
 export interface AsyncState<T> {
   data: T | null;
@@ -32,7 +32,7 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): AsyncState<T
         if (!cancelled) setData(res);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof ApiError ? err.message : "Failed to load data.");
+        if (!cancelled) setError(errorMessage(err, "Failed to load data."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

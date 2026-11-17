@@ -4,7 +4,9 @@ import { familyApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
 import { ApiError, errorMessage } from "@/api/client";
 import { ConfirmButton, Modal } from "@/components/Modal";
-import { Badge, EmptyState, ErrorState, Loading, PageHeader } from "@/components/ui";
+import { Badge, ContactLink, EmptyState, ErrorState, Loading, PageHeader } from "@/components/ui";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 import { RELATIONSHIP_LABELS, formatDate, initials, relationshipLabel } from "@/lib/format";
 import type { FamilyMember } from "@/api/types";
 
@@ -16,6 +18,8 @@ export function FamilyPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [inviteFor, setInviteFor] = useState<FamilyMember | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
+  usePageMeta("Family", "The people whose insurance you manage.");
 
   const canManage = activeAccess?.role === "admin" || activeAccess?.role === "owner";
   if (!activeFamilyId) return null;
@@ -52,8 +56,12 @@ export function FamilyPage() {
               <dl className="mt-4 space-y-1 text-sm text-ink-700">
                 {m.date_of_birth && <div>Born {formatDate(m.date_of_birth)}</div>}
                 {m.blood_group && <div>Blood group {m.blood_group}</div>}
-                {m.phone && <div>{m.phone}</div>}
-                {m.email && <div className="truncate">{m.email}</div>}
+                {m.phone && (
+                  <div>
+                    <ContactLink value={m.phone} className="font-medium text-brand-700" />
+                  </div>
+                )}
+                {m.email && <ContactLink value={m.email} className="font-medium text-brand-700" />}
               </dl>
 
               {canManage && m.role !== "owner" && (
@@ -71,9 +79,12 @@ export function FamilyPage() {
                       onChange={async (e) => {
                         try {
                           await familyApi.changeRole(activeFamilyId, m.id, e.target.value);
+                          toast.success(`Role updated for ${m.name}.`);
                           members.reload();
                         } catch (err) {
-                          setError(errorMessage(err, "Could not change role."));
+                          const message = errorMessage(err, "Could not change role.");
+                          setError(message);
+                          toast.error(message);
                         }
                       }}
                     >
@@ -85,6 +96,7 @@ export function FamilyPage() {
                     confirmLabel="Remove"
                     onConfirm={async () => {
                       await familyApi.removeMember(activeFamilyId, m.id);
+                      toast.success(`${m.name} was removed from this family.`);
                       members.reload();
                     }}
                   >
@@ -138,6 +150,7 @@ function AddMemberModal({
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -152,9 +165,12 @@ function AddMemberModal({
         phone: form.phone.trim() || null,
         email: form.email.trim() || null,
       } as Partial<FamilyMember>);
+      toast.success("Family member added.");
       onDone();
     } catch (err) {
-      setError(errorMessage(err, "Could not add the member."));
+      const message = errorMessage(err, "Could not add the member.");
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -177,7 +193,7 @@ function AddMemberModal({
             ))}
           </select>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label className="label" htmlFor="m-dob">Date of birth</label>
             <input id="m-dob" type="date" className="input" value={form.date_of_birth}
@@ -185,7 +201,7 @@ function AddMemberModal({
           </div>
           <div>
             <label className="label" htmlFor="m-blood">Blood group</label>
-            <input id="m-blood" className="input" list="blood-groups" placeholder="e.g. O+"
+            <input id="m-blood" className="input" list="blood-groups"
               value={form.blood_group}
               onChange={(e) => setForm((f) => ({ ...f, blood_group: e.target.value }))} />
             <datalist id="blood-groups">
@@ -195,7 +211,7 @@ function AddMemberModal({
             </datalist>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label className="label" htmlFor="m-phone">Phone</label>
             <input id="m-phone" className="input" value={form.phone}
@@ -233,19 +249,26 @@ function InviteModal({
   const [email, setEmail] = useState(defaultEmail);
   const [role, setRole] = useState("member");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    setBusy(true);
     setError(null);
     try {
       await familyApi.invite(familyId, email, role, member.id);
+      toast.success(`Invite linked for ${member.name}.`);
       onDone();
     } catch (err) {
-      setError(
+      const message =
         err instanceof ApiError && err.code === "USER_NOT_FOUND"
           ? "No Koverly account uses that email yet. Ask them to sign up first."
-          : errorMessage(err, "Could not send the invite."),
-      );
+          : errorMessage(err, "Could not send the invite.");
+      setError(message);
+      toast.error(message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -269,7 +292,9 @@ function InviteModal({
         {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
         <div className="flex justify-end gap-3">
           <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary">Send invite</button>
+          <button className="btn-primary" disabled={busy}>
+            {busy ? "Sending…" : "Send invite"}
+          </button>
         </div>
       </form>
     </Modal>

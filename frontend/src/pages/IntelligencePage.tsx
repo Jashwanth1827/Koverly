@@ -4,6 +4,7 @@ import { useAsync } from "@/lib/useAsync";
 import { Badge, Disclaimer, EmptyState, ErrorState, Loading, PageHeader } from "@/components/ui";
 import { formatCurrency, policyTypeLabel, severityTone } from "@/lib/format";
 import type { CoverageNode, IntelligenceItem } from "@/api/types";
+import { usePageMeta } from "@/lib/pageMeta";
 
 const KIND_LABELS: Record<string, string> = {
   expiring: "Expiring",
@@ -16,6 +17,10 @@ export function IntelligencePage() {
   const { activeFamilyId } = useAuth();
   const intel = useAsync(() => insightApi.intelligence(activeFamilyId!), [activeFamilyId]);
   const coverage = useAsync(() => insightApi.coverageMap(activeFamilyId!), [activeFamilyId]);
+  usePageMeta(
+    "Insurance Intelligence",
+    "What may be missing, expiring, or overlapping in your family's cover.",
+  );
 
   if (!activeFamilyId) return null;
 

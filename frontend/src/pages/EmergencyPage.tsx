@@ -4,7 +4,10 @@ import { emergencyApi, familyApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
 import { ApiError } from "@/api/client";
 import { Modal } from "@/components/Modal";
-import { EmptyState, ErrorState, Loading } from "@/components/ui";
+import { ContactLink, EmptyState, ErrorState, Loading } from "@/components/ui";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
+import { copyText } from "@/lib/clipboard";
 import { formatCurrency, formatDate, relationshipLabel } from "@/lib/format";
 
 export function EmergencyPage() {
@@ -16,6 +19,7 @@ export function EmergencyPage() {
     [activeFamilyId, memberId],
   );
   const [shareOpen, setShareOpen] = useState(false);
+  usePageMeta("Emergency", "Fast access to the cover that matters right now.");
 
   const canShare = activeAccess?.role !== "viewer";
   if (!activeFamilyId) return null;
@@ -101,7 +105,9 @@ export function EmergencyPage() {
                     {p.claim_contact && (
                       <div>
                         <dt className="text-ink-500">Claim helpline</dt>
-                        <dd className="font-medium text-ink-900">{p.claim_contact}</dd>
+                        <dd className="font-medium text-ink-900">
+                          <ContactLink value={p.claim_contact} className="text-brand-700" />
+                        </dd>
                       </div>
                     )}
                     <div>
@@ -123,9 +129,7 @@ export function EmergencyPage() {
                 {profile.data!.contacts.map((c, i) => (
                   <li key={i} className="flex items-center justify-between text-sm">
                     <span className="text-ink-500">{c.label}</span>
-                    <a href={`tel:${c.value}`} className="font-medium text-brand-700 hover:underline">
-                      {c.value}
-                    </a>
+                    <ContactLink value={c.value} className="font-medium text-brand-700" />
                   </li>
                 ))}
               </ul>
@@ -169,6 +173,7 @@ function ShareModal({
   const [share, setShare] = useState<{ url: string; expires_at: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   async function create() {
     setBusy(true);
@@ -180,7 +185,9 @@ function ShareModal({
       });
       setShare({ url: `${window.location.origin}/emergency/share/${res.token}`, expires_at: res.expires_at });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not create the share link.");
+      const message = err instanceof ApiError ? err.message : "Could not create the share link.";
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -201,7 +208,11 @@ function ShareModal({
           <div className="flex gap-2">
             <button
               className="btn-secondary flex-1"
-              onClick={() => navigator.clipboard?.writeText(share.url)}
+              onClick={async () => {
+                const copied = await copyText(share.url);
+                if (copied) toast.success("Share link copied to clipboard.");
+                else toast.error("Could not copy the link. Select and copy it manually.");
+              }}
             >
               Copy link
             </button>

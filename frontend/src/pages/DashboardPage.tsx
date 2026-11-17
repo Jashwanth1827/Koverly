@@ -14,7 +14,6 @@ import {
   StatusBadge,
 } from "@/components/ui";
 import {
-
   daysUntil,
   formatCurrency,
   formatDate,
@@ -23,6 +22,8 @@ import {
   severityTone,
 } from "@/lib/format";
 import { Badge } from "@/components/ui";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 
 export function DashboardPage() {
   const { activeFamilyId } = useAuth();
@@ -31,6 +32,8 @@ export function DashboardPage() {
     () => insightApi.dashboard(activeFamilyId!),
     [activeFamilyId],
   );
+  const toast = useToast();
+  usePageMeta(state.data?.family_name ?? "Dashboard", "Your family's insurance at a glance.");
 
   if (!activeFamilyId) return null;
   if (state.loading) return <Loading label="Building your family protection overview…" />;
@@ -177,6 +180,7 @@ export function DashboardPage() {
           onClose={() => setShowAddPolicy(false)}
           onSaved={() => {
             setShowAddPolicy(false);
+            toast.success("Policy added to your family.");
             state.reload();
           }}
         />

@@ -109,7 +109,7 @@ export function PolicyForm({
         <div>
           <label className="label" htmlFor="sum_insured">Sum insured</label>
           <input id="sum_insured" className="input" inputMode="decimal" value={form.sum_insured}
-            onChange={(e) => set("sum_insured", e.target.value)} placeholder="500000" />
+            onChange={(e) => set("sum_insured", e.target.value)} />
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>

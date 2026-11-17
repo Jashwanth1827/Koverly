@@ -1,12 +1,15 @@
 import { useParams } from "react-router-dom";
 import { emergencyApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
-import { ErrorState, Loading } from "@/components/ui";
+import { ContactLink, ErrorState, Loading } from "@/components/ui";
+import { AppFooter } from "@/components/Footer";
 import { formatCurrency, formatDate } from "@/lib/format";
+import { usePageMeta } from "@/lib/pageMeta";
 
 export function EmergencySharePage() {
   const { token } = useParams();
   const profile = useAsync(() => emergencyApi.resolve(token!), [token]);
+  usePageMeta("Emergency summary", "A temporary, shared emergency insurance summary.");
 
   return (
     <div className="mx-auto min-h-full max-w-2xl px-4 py-8">
@@ -51,7 +54,9 @@ export function EmergencySharePage() {
                 {p.claim_contact && (
                   <div>
                     <dt className="text-ink-500">Claim helpline</dt>
-                    <dd className="font-medium">{p.claim_contact}</dd>
+                    <dd className="font-medium">
+                      <ContactLink value={p.claim_contact} className="text-brand-700" />
+                    </dd>
                   </div>
                 )}
                 <div>
@@ -69,7 +74,7 @@ export function EmergencySharePage() {
                 {profile.data!.contacts.map((c, i) => (
                   <li key={i} className="flex justify-between">
                     <span className="text-ink-500">{c.label}</span>
-                    <a href={`tel:${c.value}`} className="font-medium text-brand-700">{c.value}</a>
+                    <ContactLink value={c.value} className="font-medium text-brand-700" />
                   </li>
                 ))}
               </ul>
@@ -88,6 +93,7 @@ export function EmergencySharePage() {
           </p>
         </div>
       )}
+      <AppFooter />
     </div>
   );
 }

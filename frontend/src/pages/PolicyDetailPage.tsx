@@ -7,12 +7,14 @@ import { errorMessage, saveBlob } from "@/api/client";
 import { ConfirmButton, Modal } from "@/components/Modal";
 import { Badge, Disclaimer, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import { daysUntil, formatCurrency, formatDate, formatPremium, policyTypeLabel } from "@/lib/format";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="border-b border-slate-100 py-3">
       <dt className="text-xs font-medium uppercase tracking-wide text-ink-500">{label}</dt>
-      <dd className="mt-0.5 text-sm text-ink-900">{value || "—"}</dd>
+      <dd className="mt-0.5 break-words text-sm text-ink-900">{value || "—"}</dd>
     </div>
   );
 }
@@ -28,6 +30,11 @@ export function PolicyDetailPage() {
 
   const policy = useAsync(() => policyApi.get(activeFamilyId!, policyId!), [activeFamilyId, policyId]);
   const docs = useAsync(() => documentApi.list(activeFamilyId!, { policy_id: policyId! }), [activeFamilyId, policyId]);
+  const toast = useToast();
+  usePageMeta(
+    policy.data ? `${policy.data.insurer} — ${policyTypeLabel(policy.data.policy_type)}` : "Policy details",
+    "Policy details, documents, and renewal dates recorded for your family.",
+  );
 
   const canWrite = activeAccess?.role !== "viewer";
   const canDelete = activeAccess?.role === "admin" || activeAccess?.role === "owner";
@@ -53,9 +60,12 @@ export function PolicyDetailPage() {
         status: editForm.status,
       });
       setEditing(false);
+      toast.success("Policy changes saved.");
       policy.reload();
     } catch (err) {
-      setError(errorMessage(err, "Could not save changes."));
+      const message = errorMessage(err, "Could not save changes.");
+      setError(message);
+      toast.error(message);
     }
   }
 
@@ -65,8 +75,11 @@ export function PolicyDetailPage() {
     try {
       const blob = await policyApi.summaryPdfBlob(activeFamilyId!, p.id);
       saveBlob(blob, `${p.insurer}-${p.policy_number}-summary.pdf`);
+      toast.success("Summary PDF downloaded.");
     } catch (err) {
-      setError(errorMessage(err, "Could not generate the summary PDF."));
+      const message = errorMessage(err, "Could not generate the summary PDF.");
+      setError(message);
+      toast.error(message);
     } finally {
       setDownloadingSummary(false);
     }
@@ -101,7 +114,7 @@ export function PolicyDetailPage() {
         description={p.policy_number}
         action={
           canWrite ? (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button className="btn-secondary" onClick={downloadSummary} disabled={downloadingSummary}>
                 {downloadingSummary ? "Preparing…" : "Download summary PDF"}
               </button>
@@ -111,6 +124,7 @@ export function PolicyDetailPage() {
                   confirmLabel="Delete policy"
                   onConfirm={async () => {
                     await policyApi.remove(activeFamilyId!, p.id);
+                    toast.success("Policy deleted.");
                     navigate("/policies");
                   }}
                 >

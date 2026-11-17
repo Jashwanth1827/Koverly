@@ -7,6 +7,8 @@ import { ApiError } from "@/api/client";
 import { Modal } from "@/components/Modal";
 import { EmptyState, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import { claimStatusLabel, formatDate, formatPremium } from "@/lib/format";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 import type { ClaimStatus } from "@/api/types";
 
 const STATUSES: ClaimStatus[] = [
@@ -30,6 +32,7 @@ export function ClaimsPage() {
   );
 
   const canWrite = activeAccess?.role !== "viewer";
+  usePageMeta("Claims", "Track every claim and its progress.");
   if (!activeFamilyId) return null;
 
   return (
@@ -110,6 +113,7 @@ function NewClaimModal({
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -129,9 +133,12 @@ function NewClaimModal({
         incident_date: form.incident_date || null,
         description: form.description || null,
       });
+      toast.success("Claim recorded.");
       onDone();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not create the claim.");
+      const message = err instanceof ApiError ? err.message : "Could not create the claim.";
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }

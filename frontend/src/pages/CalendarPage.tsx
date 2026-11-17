@@ -6,6 +6,9 @@ import { ApiError } from "@/api/client";
 import { Modal } from "@/components/Modal";
 import { EmptyState, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import { formatDate } from "@/lib/format";
+import { errorMessage } from "@/api/client";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 
 const KINDS: Record<string, string> = {
   renewal: "Renewal",
@@ -20,6 +23,8 @@ export function CalendarPage() {
   const events = useAsync(() => insightApi.calendar(activeFamilyId!), [activeFamilyId]);
   const reminders = useAsync(() => insightApi.reminders(activeFamilyId!), [activeFamilyId]);
   const [showNew, setShowNew] = useState(false);
+  const toast = useToast();
+  usePageMeta("Insurance Calendar", "Renewals, premiums, claims, and document dates in one timeline.");
 
   const canWrite = activeAccess?.role !== "viewer";
   if (!activeFamilyId) return null;
@@ -30,6 +35,20 @@ export function CalendarPage() {
     acc[key]!.push(ev);
     return acc;
   }, {});
+
+  async function updateReminder(id: string, action: "acknowledge" | "complete") {
+    try {
+      if (action === "acknowledge") {
+        await insightApi.acknowledgeReminder(activeFamilyId!, id);
+      } else {
+        await insightApi.completeReminder(activeFamilyId!, id);
+      }
+      toast.success(action === "acknowledge" ? "Reminder acknowledged." : "Reminder completed.");
+      reminders.reload();
+    } catch (err) {
+      toast.error(errorMessage(err, "Could not update the reminder."));
+    }
+  }
 
   return (
     <div>
@@ -90,14 +109,14 @@ export function CalendarPage() {
                       {r.status === "scheduled" || r.status === "triggered" || r.status === "sent" ? (
                         <button
                           className="btn-secondary px-3 py-1 text-xs"
-                          onClick={async () => { await insightApi.acknowledgeReminder(activeFamilyId, r.id); reminders.reload(); }}
+                          onClick={() => updateReminder(r.id, "acknowledge")}
                         >
                           Acknowledge
                         </button>
                       ) : null}
                       <button
                         className="btn-secondary px-3 py-1 text-xs"
-                        onClick={async () => { await insightApi.completeReminder(activeFamilyId, r.id); reminders.reload(); }}
+                        onClick={() => updateReminder(r.id, "complete")}
                       >
                         Complete
                       </button>
@@ -140,6 +159,7 @@ function NewReminderModal({
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -157,9 +177,12 @@ function NewReminderModal({
         due_date: form.due_date,
         offsets,
       });
+      toast.success("Reminder created.");
       onDone();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not create the reminder.");
+      const message = err instanceof ApiError ? err.message : "Could not create the reminder.";
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -173,7 +196,7 @@ function NewReminderModal({
           <input id="r-title" className="input" value={form.title}
             onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} required />
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label className="label" htmlFor="r-type">Type</label>
             <select id="r-type" className="input" value={form.reminder_type}

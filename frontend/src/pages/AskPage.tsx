@@ -5,6 +5,7 @@ import { insightApi } from "@/api/endpoints";
 import { ApiError } from "@/api/client";
 import { Disclaimer, PageHeader } from "@/components/ui";
 import type { AskResponse, RecordMatch } from "@/api/types";
+import { usePageMeta } from "@/lib/pageMeta";
 
 interface Turn {
   question: string;
@@ -49,6 +50,7 @@ export function AskPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [busy, setBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  usePageMeta("Ask InsuraOS", "Ask grounded questions about your insurance records.");
 
   async function ask(q: string) {
     if (!q.trim() || !activeFamilyId) return;
@@ -106,7 +108,7 @@ export function AskPage() {
                     <p className="text-sm text-red-700">{turn.error}</p>
                   ) : turn.response ? (
                     <>
-                      <p className="whitespace-pre-wrap text-sm text-ink-900">{turn.response.answer}</p>
+                      <p className="whitespace-pre-wrap break-words text-sm text-ink-900">{turn.response.answer}</p>
 
                       {turn.response.matches.length > 0 && (
                         <div className="mt-3 border-t border-slate-100 pt-3">
@@ -181,7 +183,7 @@ export function AskPage() {
         }}
       >
         <input
-          className="input"
+          className="input min-w-0 flex-1"
           placeholder="Ask about your insurance…"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}

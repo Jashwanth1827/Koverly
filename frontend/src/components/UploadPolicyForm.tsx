@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { documentApi } from "@/api/endpoints";
 import { errorMessage } from "@/api/client";
 import { Badge, Loading } from "@/components/ui";
+import { useToast } from "@/components/Toast";
 import type {
   AnalysisDetail,
   CandidateField,
@@ -299,6 +300,7 @@ function CandidateReview({
   const [values, setValues] = useState<Record<string, string>>({});
   const [rejected, setRejected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   function currentValue(f: CandidateField): string {
     return values[f.field_name] ?? f.value ?? "";
@@ -324,9 +326,12 @@ function CandidateReview({
         confirm,
         reject: Array.from(rejected),
       });
+      toast.success("Policy confirmed and saved.");
       onDone();
     } catch (err) {
-      onError(errorMessage(err, "Could not save the reviewed policy."));
+      const message = errorMessage(err, "Could not save the reviewed policy.");
+      onError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -336,9 +341,12 @@ function CandidateReview({
     setBusy(true);
     try {
       await documentApi.rejectCandidate(familyId, documentId, candidate.id);
+      toast.success("Policy dismissed.");
       onDone();
     } catch (err) {
-      onError(errorMessage(err, "Could not dismiss this policy."));
+      const message = errorMessage(err, "Could not dismiss this policy.");
+      onError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -420,7 +428,7 @@ function CandidateReview({
             const isRequired = (REQUIRED as readonly string[]).includes(f.field_name);
             return (
               <li key={f.id} className="flex flex-wrap items-center gap-3 py-3">
-                <div className="w-40 shrink-0">
+                <div className="w-full shrink-0 sm:w-40">
                   <p className="text-sm font-medium capitalize text-ink-900">
                     {f.field_name.replace(/_/g, " ")}
                     {isRequired && <span className="ml-1 text-red-600" aria-label="required">*</span>}
@@ -438,12 +446,11 @@ function CandidateReview({
                     )}
                   </div>
                 </div>
-                <div className="min-w-[180px] flex-1">
+                <div className="min-w-0 w-full flex-1 sm:min-w-[180px]">
                   <input
                     className="input"
                     value={currentValue(f)}
                     disabled={isRejected}
-                    placeholder={isRequired ? "Required" : "Not found in uploaded document"}
                     onChange={(e) => setValues((v) => ({ ...v, [f.field_name]: e.target.value }))}
                     aria-label={`Value for ${f.field_name}`}
                   />

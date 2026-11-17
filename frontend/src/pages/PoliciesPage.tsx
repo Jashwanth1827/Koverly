@@ -4,6 +4,8 @@ import { useAuth } from "@/context/AuthContext";
 import { policyApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
 import { AddPolicyModal } from "@/components/AddPolicyModal";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 import {
   EmptyState,
   ErrorState,
@@ -36,6 +38,9 @@ export function PoliciesPage() {
   );
 
   const canWrite = activeAccess?.role !== "viewer";
+  const toast = useToast();
+  usePageMeta("Policies", "Every insurance policy your family holds, in one place.");
+
   if (!activeFamilyId) return null;
 
   return (
@@ -84,9 +89,9 @@ export function PoliciesPage() {
           ) : undefined}
         />
       ) : (
-        <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px]">
+        <>
+        <div className="card hidden overflow-hidden sm:block">
+          <table className="w-full">
               <thead>
                 <tr>
                   <th className="table-head">Policy</th>
@@ -129,8 +134,54 @@ export function PoliciesPage() {
                 })}
               </tbody>
             </table>
-          </div>
         </div>
+
+        <ul className="space-y-3 sm:hidden">
+          {policies.data!.items.map((p) => {
+            const expiry = p.renewal_date ?? p.expiry_date;
+            const days = daysUntil(expiry);
+            return (
+              <li key={p.id} className="card p-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <Link to={`/policies/${p.id}`} className="font-medium text-ink-900">
+                      {p.insurer}
+                    </Link>
+                    <p className="break-all text-xs text-ink-500">{p.policy_number}</p>
+                  </div>
+                  <StatusBadge status={p.status} />
+                </div>
+                <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <dt className="text-xs text-ink-500">Type</dt>
+                    <dd className="text-ink-900">{policyTypeLabel(p.policy_type)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-ink-500">Sum insured</dt>
+                    <dd className="text-ink-900">{formatCurrency(p.sum_insured)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-ink-500">Premium</dt>
+                    <dd className="text-ink-900">
+                      {formatPremium(p.premium)}
+                      {p.premium_frequency && <span className="text-xs"> /{p.premium_frequency}</span>}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-ink-500">Renewal / expiry</dt>
+                    <dd className="text-ink-900">
+                      {formatDate(expiry)}
+                      {days !== null && days >= 0 && days <= 60 && (
+                        <span className="ml-1 text-xs font-medium text-amber-700">in {days}d</span>
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              </li>
+            );
+          })}
+        </ul>
+        </>
       )}
 
       {showForm && (
@@ -138,6 +189,7 @@ export function PoliciesPage() {
           onClose={() => setShowForm(false)}
           onSaved={() => {
             setShowForm(false);
+            toast.success("Policy added to your family.");
             policies.reload();
           }}
         />

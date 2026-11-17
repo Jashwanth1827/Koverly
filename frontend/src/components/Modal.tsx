@@ -21,7 +21,7 @@ export function Modal({
       onClick={onClose}
     >
       <div
-        className={`max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-xl sm:rounded-2xl ${
+        className={`max-h-[92vh] w-full min-w-0 overflow-x-hidden overflow-y-auto rounded-t-2xl bg-white p-5 shadow-xl sm:rounded-2xl ${
           wide ? "sm:max-w-2xl" : "sm:max-w-lg"
         }`}
         onClick={(e) => e.stopPropagation()}
@@ -117,8 +117,8 @@ export function DangerConfirmModal({
     setError(null);
     try {
       await onConfirm();
-    } catch {
-      setError("The action could not be completed. Please try again.");
+    } catch (err) {
+      setError(errorMessage(err, "The action could not be completed. Please try again."));
       setBusy(false);
     }
   }

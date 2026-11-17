@@ -6,6 +6,9 @@ import { ApiError, errorMessage, saveBlob } from "@/api/client";
 import { ConfirmButton, Modal } from "@/components/Modal";
 import { Badge, Disclaimer, EmptyState, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
 import { formatDate } from "@/lib/format";
+import { compressedImageDataUrl } from "@/lib/images";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 import type { Document, Extraction } from "@/api/types";
 
 const ACCEPT = "application/pdf,image/jpeg,image/png";
@@ -17,6 +20,8 @@ export function DocumentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [reviewDoc, setReviewDoc] = useState<Document | null>(null);
   const [previewDoc, setPreviewDoc] = useState<Document | null>(null);
+  const toast = useToast();
+  usePageMeta("Documents", "Your private policy document vault.");
 
   const canWrite = activeAccess?.role !== "viewer";
   if (!activeFamilyId) return null;
@@ -26,11 +31,14 @@ export function DocumentsPage() {
     setError(null);
     try {
       await documentApi.upload(activeFamilyId!, file);
+      toast.success("Document uploaded. Extracted details will appear shortly.");
       // Processing runs in the background; poll briefly for the result.
       setTimeout(() => docs.reload(), 800);
       setTimeout(() => docs.reload(), 2500);
     } catch (err) {
-      setError(errorMessage(err, "Could not upload the document."));
+      const message = errorMessage(err, "Could not upload the document.");
+      setError(message);
+      toast.error(message);
     } finally {
       setUploading(false);
     }
@@ -78,9 +86,9 @@ export function DocumentsPage() {
           description="Upload a policy PDF or a photo of a policy and Koverly will extract the key details for you to review."
         />
       ) : (
-        <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px]">
+        <>
+        <div className="card hidden overflow-hidden sm:block">
+          <table className="w-full">
               <thead>
                 <tr>
                   <th className="table-head">File</th>
@@ -115,9 +123,12 @@ export function DocumentsPage() {
                             onClick={async () => {
                               try {
                                 await documentApi.reprocess(activeFamilyId, d.id);
+                                toast.success("Reprocessing started.");
                                 docs.reload();
                               } catch (err) {
-                                setError(errorMessage(err, "Could not reprocess the document."));
+                                const message = errorMessage(err, "Could not reprocess the document.");
+                                setError(message);
+                                toast.error(message);
                               }
                             }}
                           >
@@ -137,6 +148,7 @@ export function DocumentsPage() {
                             busyLabel="Deleting…"
                             onConfirm={async () => {
                               await documentApi.remove(activeFamilyId, d.id);
+                              toast.success("Document deleted.");
                               await docs.reload();
                             }}
                           >
@@ -149,8 +161,72 @@ export function DocumentsPage() {
                 ))}
               </tbody>
             </table>
-          </div>
         </div>
+
+        <ul className="space-y-3 sm:hidden">
+          {docs.data!.items.map((d) => (
+            <li key={d.id} className="card p-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="break-all font-medium text-ink-900">{d.original_filename}</p>
+                  <p className="mt-1 text-xs text-ink-500">
+                    {d.document_type} · {formatDate(d.created_at)}
+                  </p>
+                </div>
+                <StatusBadge status={d.status} />
+              </div>
+              {d.processing_error && (
+                <p className="mt-2 break-words text-xs text-red-600">{d.processing_error}</p>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {d.status === "processed" && (
+                  <button className="btn-secondary px-3 py-1 text-xs" onClick={() => setReviewDoc(d)}>
+                    Review fields
+                  </button>
+                )}
+                {d.status === "failed" && canWrite && (
+                  <button
+                    className="btn-secondary px-3 py-1 text-xs"
+                    onClick={async () => {
+                      try {
+                        await documentApi.reprocess(activeFamilyId, d.id);
+                        toast.success("Reprocessing started.");
+                        docs.reload();
+                      } catch (err) {
+                        const message = errorMessage(err, "Could not reprocess the document.");
+                        setError(message);
+                        toast.error(message);
+                      }
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
+                <button
+                  className="btn-secondary px-3 py-1 text-xs"
+                  onClick={() => setPreviewDoc(d)}
+                >
+                  Open
+                </button>
+                {canWrite && (
+                  <ConfirmButton
+                    className="btn-ghost px-2 py-1 text-xs"
+                    confirmLabel="Delete"
+                    busyLabel="Deleting…"
+                    onConfirm={async () => {
+                      await documentApi.remove(activeFamilyId, d.id);
+                      toast.success("Document deleted.");
+                      await docs.reload();
+                    }}
+                  >
+                    Delete
+                  </ConfirmButton>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+        </>
       )}
 
       <Disclaimer>
@@ -199,6 +275,7 @@ function DocumentPreviewModal({
   const [downloading, setDownloading] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const toast = useToast();
   const isPdf = doc.content_type === "application/pdf";
 
   useEffect(() => {
@@ -208,10 +285,25 @@ function DocumentPreviewModal({
     setError(null);
     documentApi
       .previewBlob(familyId, doc.id)
-      .then((blob) => {
+      .then(async (blob) => {
         if (cancelled) return;
+        if (!isPdf) {
+          try {
+            // Smaller in-memory preview; the stored document stays untouched.
+            const dataUrl = await compressedImageDataUrl(blob);
+            if (!cancelled) setBlobUrl(dataUrl);
+            return;
+          } catch {
+            /* fall back to the original blob below */
+          }
+        }
         url = URL.createObjectURL(blob);
-        setBlobUrl(url);
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          url = null;
+        } else {
+          setBlobUrl(url);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(errorMessage(err, "Could not open the document."));
@@ -220,15 +312,18 @@ function DocumentPreviewModal({
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [familyId, doc.id, reloadKey]);
+  }, [familyId, doc.id, isPdf, reloadKey]);
 
   async function download() {
     setDownloading(true);
     try {
       const blob = await documentApi.previewBlob(familyId, doc.id);
       saveBlob(blob, doc.original_filename);
+      toast.success("Download started.");
     } catch (err) {
-      setError(errorMessage(err, "Could not download the document."));
+      const message = errorMessage(err, "Could not download the document.");
+      setError(message);
+      toast.error(message);
     } finally {
       setDownloading(false);
     }
@@ -240,8 +335,11 @@ function DocumentPreviewModal({
     try {
       const blob = await policyApi.summaryPdfBlob(familyId, doc.policy_id);
       saveBlob(blob, `${doc.original_filename.replace(/\.[^.]+$/, "")}-summary.pdf`);
+      toast.success("Summary PDF downloaded.");
     } catch (err) {
-      setError(errorMessage(err, "Could not generate the summary PDF."));
+      const message = errorMessage(err, "Could not generate the summary PDF.");
+      setError(message);
+      toast.error(message);
     } finally {
       setSummarizing(false);
     }
@@ -285,7 +383,9 @@ function DocumentPreviewModal({
         <img
           src={blobUrl}
           alt={`Preview of ${doc.original_filename}`}
-          className="mx-auto max-h-[70vh] rounded-lg border border-slate-200 object-contain"
+          loading="lazy"
+          decoding="async"
+          className="mx-auto max-h-[70vh] max-w-full rounded-lg border border-slate-200 object-contain"
         />
       )}
 
@@ -316,6 +416,7 @@ function ReviewModal({
   const [rejected, setRejected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   function currentValue(f: Extraction): string {
     return values[f.field_name] ?? f.value ?? "";
@@ -336,13 +437,15 @@ function ReviewModal({
         confirm,
         reject: Array.from(rejected),
       });
+      toast.success("Extracted fields confirmed and applied.");
       onDone();
     } catch (err) {
-      setError(
+      const message =
         err instanceof ApiError && err.code === "POLICY_REQUIRED"
           ? "Select a policy to apply the confirmed fields to."
-          : errorMessage(err, "Could not save the review."),
-      );
+          : errorMessage(err, "Could not save the review.");
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -377,7 +480,7 @@ function ReviewModal({
               const isRejected = rejected.has(f.field_name);
               return (
                 <li key={f.id} className="flex flex-wrap items-center gap-3 py-3">
-                  <div className="w-40 shrink-0">
+                  <div className="w-full shrink-0 sm:w-40">
                     <p className="text-sm font-medium capitalize text-ink-900">
                       {f.field_name.replace(/_/g, " ")}
                     </p>
@@ -392,7 +495,7 @@ function ReviewModal({
                       {f.source_page && <span className="text-xs text-ink-300">p.{f.source_page}</span>}
                     </div>
                   </div>
-                  <div className="min-w-[180px] flex-1">
+                  <div className="min-w-0 w-full flex-1 sm:min-w-[180px]">
                     {f.found ? (
                       <input
                         className="input"

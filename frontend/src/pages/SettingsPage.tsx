@@ -3,8 +3,10 @@ import { useAuth } from "@/context/AuthContext";
 import { configApi, familyApi, insightApi } from "@/api/endpoints";
 import { useAsync } from "@/lib/useAsync";
 import { ApiError } from "@/api/client";
-import { DangerConfirmModal } from "@/components/Modal";
-import { Disclaimer, ErrorState, Loading, PageHeader } from "@/components/ui";
+import { DangerConfirmModal, Modal } from "@/components/Modal";
+import { ContactLink, Disclaimer, ErrorState, Loading, PageHeader } from "@/components/ui";
+import { useToast } from "@/components/Toast";
+import { usePageMeta } from "@/lib/pageMeta";
 import { formatDate } from "@/lib/format";
 import type { Family } from "@/api/types";
 
@@ -21,12 +23,16 @@ export function SettingsPage() {
   );
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Family | null>(null);
+  const [creatingFamily, setCreatingFamily] = useState(false);
+  const toast = useToast();
+  usePageMeta("Settings", "Your account, family, plan, and activity.");
 
   const isAdmin = activeAccess?.role === "admin" || activeAccess?.role === "owner";
 
   async function deleteFamily(family: Family) {
     await familyApi.remove(family.id);
     setDeleteTarget(null);
+    toast.success("Family and all its data were deleted.");
     await refreshFamilies();
   }
 
@@ -40,11 +46,17 @@ export function SettingsPage() {
           <dl className="mt-3 space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-ink-500">Name</dt>
-              <dd className="text-ink-900">{user?.full_name}</dd>
+              <dd className="min-w-0 break-words text-right text-ink-900">{user?.full_name}</dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-ink-500">Email</dt>
-              <dd className="text-ink-900">{user?.email}</dd>
+              <dd className="min-w-0 text-right text-ink-900">
+                {user?.email ? (
+                  <ContactLink value={user.email} className="font-medium text-brand-700" />
+                ) : (
+                  "—"
+                )}
+              </dd>
             </div>
           </dl>
         </section>
@@ -69,19 +81,7 @@ export function SettingsPage() {
               </li>
             ))}
           </ul>
-          <button
-            className="btn-secondary mt-4"
-            onClick={async () => {
-              const name = window.prompt("New family name");
-              if (!name) return;
-              try {
-                await familyApi.create(name);
-                await refreshFamilies();
-              } catch (err) {
-                setError(err instanceof ApiError ? err.message : "Could not create the family.");
-              }
-            }}
-          >
+          <button className="btn-secondary mt-4" onClick={() => setCreatingFamily(true)}>
             Create another family
           </button>
         </section>
@@ -97,7 +97,7 @@ export function SettingsPage() {
               </p>
               <p className="text-sm text-ink-500">Status: {subscription.data.status}</p>
               {isAdmin && (
-                <div className="mt-4 flex gap-2">
+                <div className="mt-4 flex flex-wrap gap-2">
                   {(["free", "pro", "family_pro"] as const).map((plan) => (
                     <button
                       key={plan}
@@ -106,9 +106,13 @@ export function SettingsPage() {
                       onClick={async () => {
                         try {
                           await insightApi.setSubscription(activeFamilyId!, plan);
+                          toast.success("Plan preference saved.");
                           subscription.reload();
                         } catch (err) {
-                          setError(err instanceof ApiError ? err.message : "Could not change the plan.");
+                          const message =
+                            err instanceof ApiError ? err.message : "Could not change the plan.";
+                          setError(message);
+                          toast.error(message);
                         }
                       }}
                     >
@@ -137,19 +141,19 @@ export function SettingsPage() {
             <dl className="mt-3 space-y-2 text-sm">
               <div className="flex justify-between">
                 <dt className="text-ink-500">AI provider</dt>
-                <dd className="text-ink-900">{config.data!.ai_provider}</dd>
+                <dd className="min-w-0 break-words text-right text-ink-900">{config.data!.ai_provider}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-ink-500">Notifications</dt>
-                <dd className="text-ink-900">{config.data!.notification_backend}</dd>
+                <dd className="min-w-0 break-words text-right text-ink-900">{config.data!.notification_backend}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-ink-500">Storage</dt>
-                <dd className="text-ink-900">{config.data!.storage_backend}</dd>
+                <dd className="min-w-0 break-words text-right text-ink-900">{config.data!.storage_backend}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-ink-500">Max upload</dt>
-                <dd className="text-ink-900">{config.data!.max_upload_mb} MB</dd>
+                <dd className="min-w-0 break-words text-right text-ink-900">{config.data!.max_upload_mb} MB</dd>
               </div>
             </dl>
           )}
@@ -192,6 +196,21 @@ export function SettingsPage() {
         financial adviser, and does not guarantee any claim outcome.
       </Disclaimer>
 
+      {creatingFamily && (
+        <CreateFamilyModal
+          onClose={() => setCreatingFamily(false)}
+          onDone={async () => {
+            setCreatingFamily(false);
+            await refreshFamilies();
+            toast.success("Family created.");
+          }}
+          onError={(message) => {
+            setError(message);
+            toast.error(message);
+          }}
+        />
+      )}
+
       {deleteTarget && (
         <DangerConfirmModal
           title={`Delete “${deleteTarget.name}”?`}
@@ -203,5 +222,60 @@ export function SettingsPage() {
         />
       )}
     </div>
+  );
+}
+
+function CreateFamilyModal({
+  onClose,
+  onDone,
+  onError,
+}: {
+  onClose: () => void;
+  onDone: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      await familyApi.create(name.trim());
+      await onDone();
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : "Could not create the family.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Create another family" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <p className="text-sm text-ink-500">
+          Policies, claims, and documents are kept separate between families.
+        </p>
+        <div>
+          <label className="label" htmlFor="new-family-name">Family name</label>
+          <input
+            id="new-family-name"
+            className="input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+        </div>
+        <div className="flex justify-end gap-3">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn-primary" disabled={busy}>
+            {busy ? "Creating…" : "Create family"}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }

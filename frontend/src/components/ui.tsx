@@ -1,4 +1,3 @@
-import { Link } from "react-router-dom";
 import type { ReactNode } from "react";
 import { statusTone } from "@/lib/format";
 
@@ -97,10 +96,25 @@ export function Disclaimer({ children }: { children: ReactNode }) {
   );
 }
 
-export function LinkButton({ to, children }: { to: string; children: ReactNode }) {
-  return (
-    <Link to={to} className="btn-secondary">
-      {children}
-    </Link>
-  );
+/** Render a recorded phone number or email address as a tappable link. */
+export function ContactLink({ value, className = "" }: { value: string; className?: string }) {
+  const text = value.trim();
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
+  const isPhone = /^[+\d][\d\s().-]*$/.test(text) && text.replace(/\D/g, "").length >= 6;
+
+  if (isEmail) {
+    return (
+      <a href={`mailto:${text}`} className={`break-all hover:underline ${className}`}>
+        {text}
+      </a>
+    );
+  }
+  if (isPhone) {
+    return (
+      <a href={`tel:${text.replace(/[^\d+]/g, "")}`} className={`hover:underline ${className}`}>
+        {text}
+      </a>
+    );
+  }
+  return <span className={`break-words ${className}`}>{text}</span>;
 }
