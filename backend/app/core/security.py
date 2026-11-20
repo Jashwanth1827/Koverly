@@ -17,7 +17,7 @@ from app.core.config import settings
 _hasher = PasswordHasher()
 
 # Argon2 parameters are intentionally library defaults (memory-hard).
-MIN_PASSWORD_LENGTH = 8
+MIN_PASSWORD_LENGTH = 7
 MAX_PASSWORD_LENGTH = 256
 
 

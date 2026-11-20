@@ -13,9 +13,12 @@ export function LoginPage() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [revealPassword, setRevealPassword] = useState(false);
+  const [hoverPassword, setHoverPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
+  const showPassword = revealPassword || hoverPassword;
   usePageMeta(mode === "login" ? "Sign in" : "Create account");
 
   if (user) return <Navigate to="/" replace />;
@@ -99,19 +102,33 @@ export function LoginPage() {
               <label className="label" htmlFor="password">
                 Password
               </label>
-              <input
-                id="password"
-                type="password"
-                className="input"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                autoComplete={mode === "login" ? "current-password" : "new-password"}
-                minLength={mode === "register" ? 10 : undefined}
-              />
+              <div className="relative">
+                <input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  className="input pr-20"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  minLength={mode === "register" ? 7 : undefined}
+                />
+                <button
+                  type="button"
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-xs font-medium text-brand-600 hover:text-brand-700 focus:outline-none"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  onMouseEnter={() => setHoverPassword(true)}
+                  onMouseLeave={() => setHoverPassword(false)}
+                  onFocus={() => setHoverPassword(true)}
+                  onBlur={() => setHoverPassword(false)}
+                  onClick={() => setRevealPassword((visible) => !visible)}
+                >
+                  {showPassword ? "Hide" : "Show"}
+                </button>
+              </div>
               {mode === "register" && (
                 <p className="mt-1 text-xs text-ink-500">
-                  At least 10 characters, with letters and numbers.
+                  At least 7 characters, with a mix of letters, numbers, or symbols.
                 </p>
               )}
             </div>

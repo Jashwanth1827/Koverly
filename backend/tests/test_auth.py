@@ -56,6 +56,18 @@ def test_weak_password_rejected(client):
     assert resp.status_code == 422
 
 
+def test_seven_character_password_accepted(client):
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "seven@example.com",
+            "full_name": "Seven",
+            "password": "Abc1234",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
 def test_login_wrong_password(client):
     register(client, "carol@example.com", "Carol")
     resp = client.post(

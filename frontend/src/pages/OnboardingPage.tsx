@@ -10,7 +10,7 @@ import { usePageMeta } from "@/lib/pageMeta";
 import { ACCEPTED_UPLOAD_TYPES } from "@/lib/format";
 import type { Document } from "@/api/types";
 
-const STEPS = ["Create family", "Add members", "Upload documents"];
+const STEPS = ["Create family", "Upload documents"];
 
 export function OnboardingPage() {
   const { refreshFamilies, setActiveFamily, logout } = useAuth();
@@ -89,28 +89,6 @@ export function OnboardingPage() {
         )}
 
         {step === 1 && familyId && (
-          <div className="space-y-4">
-            <div>
-              <h1 className="text-xl font-semibold tracking-tight">Add family members</h1>
-              <p className="mt-1 text-sm text-ink-500">
-                Add the people you manage insurance for. You can do this now or later.
-              </p>
-            </div>
-            <p className="rounded-lg bg-brand-50 px-3 py-2 text-sm text-brand-800">
-              Your own member profile was created automatically.
-            </p>
-            <div className="flex gap-3">
-              <button className="btn-secondary flex-1" onClick={() => navigate("/family")}>
-                Add members
-              </button>
-              <button className="btn-primary flex-1" onClick={() => setStep(2)}>
-                Continue
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === 2 && familyId && (
           <OnboardingUpload familyId={familyId} onFinish={() => navigate("/", { replace: true })} />
         )}
       </div>
