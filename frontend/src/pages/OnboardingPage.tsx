@@ -7,7 +7,7 @@ import { StatusBadge } from "@/components/ui";
 import { AppFooter } from "@/components/Footer";
 import { useToast } from "@/components/Toast";
 import { usePageMeta } from "@/lib/pageMeta";
-import { ACCEPTED_UPLOAD_TYPES } from "@/lib/format";
+import { ACCEPTED_FORMATS_LABEL, ACCEPTED_UPLOAD_TYPES } from "@/lib/format";
 import type { Document } from "@/api/types";
 
 const STEPS = ["Create family", "Upload documents"];
@@ -147,8 +147,9 @@ function OnboardingUpload({
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Upload insurance documents</h1>
         <p className="mt-1 text-sm text-ink-500">
-          Upload a policy document or a photo — PDF, Word, Excel, CSV, Markdown, or plain text.
-          Koverly extracts the key details for you to review before anything is applied to a policy.
+          Upload a policy document or a photo — PDF, images, Word, Excel, CSV, Markdown, or plain
+          text. Koverly extracts the key details for you to review before anything is applied to a
+          policy.
         </p>
       </div>
 
@@ -181,7 +182,7 @@ function OnboardingUpload({
       )}
 
       <p className="text-xs text-ink-300">
-        Accepted formats: PDF, JPG, PNG, DOCX, XLSX/XLS, CSV, MD, TXT. Files are stored privately.
+        Accepted formats: {ACCEPTED_FORMATS_LABEL}. Files are stored privately.
       </p>
 
       <div className="flex gap-3">

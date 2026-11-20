@@ -5,13 +5,11 @@ import { useAsync } from "@/lib/useAsync";
 import { ApiError, errorMessage, saveBlob } from "@/api/client";
 import { ConfirmButton, Modal } from "@/components/Modal";
 import { Badge, Disclaimer, EmptyState, ErrorState, Loading, PageHeader, StatusBadge } from "@/components/ui";
-import { formatDate } from "@/lib/format";
+import { ACCEPTED_FORMATS_LABEL, ACCEPTED_UPLOAD_TYPES, formatDate } from "@/lib/format";
 import { compressedImageDataUrl } from "@/lib/images";
 import { useToast } from "@/components/Toast";
 import { usePageMeta } from "@/lib/pageMeta";
 import type { Document, Extraction } from "@/api/types";
-
-const ACCEPT = "application/pdf,image/jpeg,image/png";
 
 export function DocumentsPage() {
   const { activeFamilyId, activeAccess } = useAuth();
@@ -56,7 +54,7 @@ export function DocumentsPage() {
               <input
                 type="file"
                 className="sr-only"
-                accept={ACCEPT}
+                accept={ACCEPTED_UPLOAD_TYPES}
                 disabled={uploading}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
@@ -70,8 +68,8 @@ export function DocumentsPage() {
       />
 
       <p className="mb-4 text-sm text-ink-500">
-        Accepted formats: PDF, JPG, PNG. Text is extracted automatically and proposed fields must be
-        reviewed by you before they are applied to a policy.
+        Accepted formats: {ACCEPTED_FORMATS_LABEL}. Text is extracted automatically and proposed
+        fields must be reviewed by you before they are applied to a policy.
       </p>
 
       {error && <p role="alert" className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}

@@ -68,11 +68,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [activeFamilyId]);
 
   async function afterAuth(token: string, u: User) {
+    // Keep the app in its loading state until families are known. Otherwise the
+    // first render after sign-in has a user but an empty families list, which
+    // makes RequireFamily bounce through /onboarding for existing users.
+    setLoading(true);
     setToken(token);
     setUser(u);
-    const fams = await familyApi.list();
-    setFamilies(fams);
-    if (fams.length) setActiveFamilyId(fams[0].id);
+    try {
+      const fams = await familyApi.list();
+      setFamilies(fams);
+      if (fams.length) setActiveFamilyId(fams[0].id);
+    } finally {
+      setLoading(false);
+    }
   }
 
   const value = useMemo<AuthState>(

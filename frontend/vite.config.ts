@@ -16,7 +16,9 @@ export default defineConfig(({ mode }) => {
       allowedHosts: true,
       proxy: {
         "/api": {
-          target: env.VITE_API_PROXY || "http://localhost:8000",
+          // 127.0.0.1 avoids an IPv6 `localhost` resolution on Windows, where
+          // uvicorn binds IPv4 by default and the proxy would otherwise fail.
+          target: env.VITE_API_PROXY || "http://127.0.0.1:8000",
           changeOrigin: true,
         },
       },
