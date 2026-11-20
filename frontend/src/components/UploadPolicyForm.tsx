@@ -40,6 +40,11 @@ const FIELD_ORDER = [
 // The only fields required before a policy can be saved.
 const REQUIRED = ["insurer", "policy_number"] as const;
 
+// A scanned PDF can OCR up to 10 pages at up to 60s/page, so allow enough time
+// before telling the user processing is unusually slow.
+const POLL_INTERVAL_MS = 3000;
+const MAX_POLL_ATTEMPTS = 240; // ~12 minutes
+
 const CATEGORY_LABELS: Record<string, string> = {
   life: "Life Insurance",
   health: "Health Insurance",
@@ -97,6 +102,7 @@ export function UploadPolicyForm({
   const [detail, setDetail] = useState<AnalysisDetail | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
   const [reviewing, setReviewing] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pollTimer = useRef<number | null>(null);
@@ -109,6 +115,7 @@ export function UploadPolicyForm({
 
   async function handleFile(file: File) {
     setError(null);
+    setTimedOut(false);
     setUploading(true);
     try {
       const created = await documentApi.upload(familyId, file);
@@ -139,13 +146,13 @@ export function UploadPolicyForm({
           );
           return;
         }
-        if (attempt >= 20) {
-          setError(
-            "This is taking longer than expected. You can retry, or add the policy manually.",
-          );
+        if (attempt >= MAX_POLL_ATTEMPTS) {
+          setTimedOut(true);
           return;
         }
-        pollTimer.current = window.setTimeout(() => poll(id, attempt + 1), 3000);
+        pollTimer.current = window.setTimeout(
+          () => poll(id, attempt + 1), POLL_INTERVAL_MS,
+        );
       })
       .catch((err) => {
         const status = err instanceof ApiError ? err.status : 0;
@@ -153,13 +160,13 @@ export function UploadPolicyForm({
         // transport/server error must not abort the upload. The document is
         // already stored and background processing may still be running.
         if (status === 404 || status === 0 || status >= 500) {
-          if (attempt >= 20) {
-            setError(
-              "This is taking longer than expected. You can retry, or add the policy manually.",
-            );
+          if (attempt >= MAX_POLL_ATTEMPTS) {
+            setTimedOut(true);
             return;
           }
-          pollTimer.current = window.setTimeout(() => poll(id, attempt + 1), 3000);
+          pollTimer.current = window.setTimeout(
+            () => poll(id, attempt + 1), POLL_INTERVAL_MS,
+          );
           return;
         }
         setError(errorMessage(err, "Could not read the result."));
@@ -167,10 +174,17 @@ export function UploadPolicyForm({
   }
 
   function reset() {
+    if (pollTimer.current) window.clearTimeout(pollTimer.current);
     setDetail(null);
     setDocumentId(null);
     setError(null);
+    setTimedOut(false);
     if (fileRef.current) fileRef.current.value = "";
+  }
+
+  function continueWaiting() {
+    setTimedOut(false);
+    if (documentId) poll(documentId, 0);
   }
 
   if (!documentId) {
@@ -216,6 +230,30 @@ export function UploadPolicyForm({
         <div className="flex justify-end gap-3">
           <button type="button" className="btn-secondary" onClick={onCancel}>Close</button>
           <button type="button" className="btn-primary" onClick={reset}>Try another file</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!detail && timedOut) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-medium text-amber-900">
+            This is still taking longer than expected.
+          </p>
+          <p className="mt-1 text-xs text-amber-800">
+            Your document is saved. It may still be processing — you can keep
+            waiting, or close this and find it later under Documents.
+          </p>
+        </div>
+        <div className="flex justify-end gap-3">
+          <button type="button" className="btn-secondary" onClick={onCancel}>
+            Check later
+          </button>
+          <button type="button" className="btn-primary" onClick={continueWaiting}>
+            Keep waiting
+          </button>
         </div>
       </div>
     );

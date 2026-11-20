@@ -31,22 +31,30 @@ export function DocumentsPage() {
       const created = await documentApi.upload(activeFamilyId!, file);
       toast.success("Document uploaded. Reading its details now…");
 
-      // Processing runs in the background. Poll until it finishes, then open
-      // the review dialog so the extracted fields are immediately visible.
+      // Processing runs in the background and a scanned PDF can take several
+      // minutes to OCR. Poll long enough to catch the result, then open the
+      // review dialog so the extracted fields are immediately visible.
       let done: Document | null = null;
-      for (let attempt = 0; attempt < 15; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 700));
-        const page = await documentApi.list(activeFamilyId!, { page_size: 100 });
-        const match = page.items.find((d) => d.id === created.id) ?? null;
-        if (!match || match.status === "processed" || match.status === "failed") {
-          done = match;
-          break;
+      for (let attempt = 0; attempt < 240; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        try {
+          const match = await documentApi.get(activeFamilyId!, created.id);
+          if (match.status === "processed" || match.status === "failed") {
+            done = match;
+            break;
+          }
+        } catch (err) {
+          const status = err instanceof ApiError ? err.status : 0;
+          if (status !== 404 && status !== 0 && status < 500) throw err;
+          // Transient lookup failure — keep waiting; the document is stored.
         }
       }
       await docs.reload();
 
       if (!done) {
-        setError("Still processing. Check this document again in a moment.");
+        setError(
+          "Still processing. Your document is saved — open it again from this page in a few minutes.",
+        );
         return;
       }
       if (done.status === "failed") {
