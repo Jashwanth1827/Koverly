@@ -28,3 +28,5 @@ overwriting earlier entries.
 ## Index
 
 - [2026-10-23](./2026-10-23.md) — Document upload formats + extraction review workflow + insurer field coverage
+- [2026-11-10](./2026-11-10.md) — Supabase switch, Render hardening, RLS audit, transaction pooler
+- [2026-11-21](./2026-11-21.md) — Auth/onboarding UX, extracted-detail review, upload polling fixes, production DB recovery
