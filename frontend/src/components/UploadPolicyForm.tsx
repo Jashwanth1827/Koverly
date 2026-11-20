@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { documentApi } from "@/api/endpoints";
-import { errorMessage } from "@/api/client";
+import { ApiError, errorMessage } from "@/api/client";
 import { Badge, Loading } from "@/components/ui";
 import { useToast } from "@/components/Toast";
 import type {
@@ -125,8 +125,8 @@ export function UploadPolicyForm({
     documentApi
       .analysis(familyId, id)
       .then(async (result) => {
-        // Processing is asynchronous. Wait until the analysis exists, the
-        // document fails, or we time out — never claim success before data.
+        // Processing is asynchronous. An empty analysis means "not ready yet",
+        // not a failure — keep polling until the analysis exists or we time out.
         if (result.analysis) {
           setDetail(result);
           return;
@@ -147,7 +147,23 @@ export function UploadPolicyForm({
         }
         pollTimer.current = window.setTimeout(() => poll(id, attempt + 1), 3000);
       })
-      .catch((err) => setError(errorMessage(err, "Could not read the result.")));
+      .catch((err) => {
+        const status = err instanceof ApiError ? err.status : 0;
+        // A transient 404 (analysis row not created yet) or a temporary
+        // transport/server error must not abort the upload. The document is
+        // already stored and background processing may still be running.
+        if (status === 404 || status === 0 || status >= 500) {
+          if (attempt >= 20) {
+            setError(
+              "This is taking longer than expected. You can retry, or add the policy manually.",
+            );
+            return;
+          }
+          pollTimer.current = window.setTimeout(() => poll(id, attempt + 1), 3000);
+          return;
+        }
+        setError(errorMessage(err, "Could not read the result."));
+      });
   }
 
   function reset() {

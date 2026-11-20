@@ -105,6 +105,28 @@ def test_uploads_pdf_and_analyses_it(client):
     assert candidate["policy_type"] == "family_floater"
 
 
+def test_analysis_is_empty_while_document_is_still_processing(client, monkeypatch):
+    """Upload succeeds before analysis exists; the review UI must be able to poll."""
+
+    async def _no_processing(document_id: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.services.processing_service.process_document", _no_processing)
+    user, family = _setup(client, "pending-analysis@example.com")
+    resp = _upload(
+        client, user["access_token"], family["id"],
+        "pending.txt", make_txt_bytes(HEALTH_POLICY), "text/plain",
+    )
+    assert resp.status_code == 201, resp.text
+
+    detail = client.get(
+        f"/api/v1/families/{family['id']}/documents/{resp.json()['id']}/analysis",
+        headers=auth_headers(user["access_token"]),
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json() == {"analysis": None, "candidates": [], "candidate_count": 0}
+
+
 def test_uploads_docx_and_extracts(client):
     """A Word document is read without the user selecting a format."""
     user, family = _setup(client)

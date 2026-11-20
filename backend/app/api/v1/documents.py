@@ -324,7 +324,7 @@ async def get_analysis(
         fields = await candidate_service.get_candidate_fields(db, candidate.id)
         out.append(_candidate_out(candidate, fields))
     return AnalysisDetailOut(
-        analysis=AnalysisOut.model_validate(analysis),
+        analysis=AnalysisOut.model_validate(analysis) if analysis else None,
         candidates=out,
         candidate_count=len(out),
     )

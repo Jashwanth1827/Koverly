@@ -72,7 +72,7 @@ _METADATA_FIELDS = {
 
 async def get_analysis(
     db: AsyncSession, family_id: str, document_id: str
-) -> tuple[DocumentAnalysis, list[PolicyCandidateRecord]]:
+) -> tuple[DocumentAnalysis | None, list[PolicyCandidateRecord]]:
     await _require_document(db, family_id, document_id)
     analysis = (
         await db.execute(
@@ -80,7 +80,10 @@ async def get_analysis(
         )
     ).scalar_one_or_none()
     if analysis is None:
-        raise NotFoundError("This document has not been analysed yet.")
+        # Processing is asynchronous. An uploaded document can exist before its
+        # analysis row does; report an empty result so the UI can keep polling
+        # instead of treating this normal state as an error.
+        return None, []
     candidates = list(
         (
             await db.execute(
