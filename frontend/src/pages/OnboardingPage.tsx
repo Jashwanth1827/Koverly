@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { documentApi, familyApi } from "@/api/endpoints";
-import { ApiError } from "@/api/client";
+import { ApiError, errorMessage } from "@/api/client";
 import { useAuth } from "@/context/AuthContext";
 import { StatusBadge } from "@/components/ui";
 import { AppFooter } from "@/components/Footer";
 import { useToast } from "@/components/Toast";
 import { usePageMeta } from "@/lib/pageMeta";
 import { ACCEPTED_FORMATS_LABEL, ACCEPTED_UPLOAD_TYPES } from "@/lib/format";
-import type { Document } from "@/api/types";
+import type { Document, Extraction } from "@/api/types";
 
 const STEPS = ["Create family", "Upload documents"];
 
@@ -113,32 +113,82 @@ function OnboardingUpload({
 }) {
   const [docs, setDocs] = useState<Document[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [readyDoc, setReadyDoc] = useState<Document | null>(null);
+  const [extractions, setExtractions] = useState<Extraction[]>([]);
+  const [applied, setApplied] = useState(false);
   const toast = useToast();
 
-  async function refresh() {
+  async function refresh(): Promise<Document[]> {
     try {
       const page = await documentApi.list(familyId, { page_size: 100 });
       setDocs(page.items);
+      return page.items;
     } catch {
-      /* non-fatal — the user can review documents later */
+      return [];
     }
+  }
+
+  async function waitForProcessing(documentId: string): Promise<Document | null> {
+    // Processing runs in the background. Poll until it reaches a final state.
+    for (let attempt = 0; attempt < 15; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      const items = await refresh();
+      const doc = items.find((d) => d.id === documentId) ?? null;
+      if (!doc || doc.status === "processed" || doc.status === "failed") return doc;
+    }
+    return null;
   }
 
   async function upload(file: File) {
     setUploading(true);
     setError(null);
+    setReadyDoc(null);
+    setExtractions([]);
+    setApplied(false);
     try {
-      await documentApi.upload(familyId, file);
-      // Processing is asynchronous; poll briefly so the status becomes visible.
-      setTimeout(refresh, 800);
-      setTimeout(refresh, 2500);
-      await refresh();
-      toast.success("Document uploaded. You can review the extracted details later.");
+      const created = await documentApi.upload(familyId, file);
+      toast.success("Document uploaded. Reading its details now…");
+      const done = await waitForProcessing(created.id);
+      if (!done) {
+        setError("Still processing. Check the Documents page in a moment.");
+        return;
+      }
+      if (done.status === "failed") {
+        setError(
+          done.processing_error ||
+            "This document could not be read. You can add the policy manually.",
+        );
+        return;
+      }
+      setExtractions(await documentApi.extractions(familyId, created.id));
+      setReadyDoc(done);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not upload the document.");
+      setError(errorMessage(err, "Could not upload the document."));
     } finally {
       setUploading(false);
+    }
+  }
+
+  const found = extractions.filter((e) => e.found && e.value);
+
+  async function applyExtractedDetails() {
+    if (!readyDoc) return;
+    setApplying(true);
+    setError(null);
+    try {
+      await documentApi.confirm(familyId, readyDoc.id, {
+        confirm: Object.fromEntries(found.map((e) => [e.field_name, e.value!])),
+        reject: [],
+        create_policy: true,
+      });
+      setApplied(true);
+      toast.success("Policy created from the extracted details.");
+    } catch (err) {
+      setError(errorMessage(err, "Could not create the policy from these details."));
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -148,13 +198,12 @@ function OnboardingUpload({
         <h1 className="text-xl font-semibold tracking-tight">Upload insurance documents</h1>
         <p className="mt-1 text-sm text-ink-500">
           Upload a policy document or a photo — PDF, images, Word, Excel, CSV, Markdown, or plain
-          text. Koverly extracts the key details for you to review before anything is applied to a
-          policy.
+          text. Koverly reads the key details and lets you create the policy from them.
         </p>
       </div>
 
       <label className="btn-primary w-full cursor-pointer text-center">
-        {uploading ? "Uploading…" : "Choose a file to upload"}
+        {uploading ? "Reading document…" : "Choose a file to upload"}
         <input
           type="file"
           className="sr-only"
@@ -179,6 +228,39 @@ function OnboardingUpload({
             </li>
           ))}
         </ul>
+      )}
+
+      {readyDoc && !applied && (
+        <div className="rounded-lg border border-brand-200 bg-brand-50 p-3">
+          <p className="text-sm font-medium text-brand-900">
+            {found.length ? `${found.length} details found` : "No details could be read"}
+          </p>
+          {found.length > 0 ? (
+            <>
+              <ul className="mt-2 grid gap-1 text-xs text-brand-800 sm:grid-cols-2">
+                {found.map((e) => (
+                  <li key={e.id}>
+                    <span className="font-medium">{e.field_name.replace(/_/g, " ")}:</span>{" "}
+                    {e.value}
+                  </li>
+                ))}
+              </ul>
+              <button className="btn-primary mt-3 w-full" disabled={applying} onClick={applyExtractedDetails}>
+                {applying ? "Creating policy…" : "Create policy from these details"}
+              </button>
+            </>
+          ) : (
+            <p className="mt-1 text-xs text-brand-800">
+              You can still add the policy manually from the Policies page.
+            </p>
+          )}
+        </div>
+      )}
+
+      {applied && (
+        <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          Policy created. You can review it on the dashboard.
+        </p>
       )}
 
       <p className="text-xs text-ink-300">

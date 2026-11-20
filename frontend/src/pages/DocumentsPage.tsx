@@ -28,11 +28,35 @@ export function DocumentsPage() {
     setUploading(true);
     setError(null);
     try {
-      await documentApi.upload(activeFamilyId!, file);
-      toast.success("Document uploaded. Extracted details will appear shortly.");
-      // Processing runs in the background; poll briefly for the result.
-      setTimeout(() => docs.reload(), 800);
-      setTimeout(() => docs.reload(), 2500);
+      const created = await documentApi.upload(activeFamilyId!, file);
+      toast.success("Document uploaded. Reading its details now…");
+
+      // Processing runs in the background. Poll until it finishes, then open
+      // the review dialog so the extracted fields are immediately visible.
+      let done: Document | null = null;
+      for (let attempt = 0; attempt < 15; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        const page = await documentApi.list(activeFamilyId!, { page_size: 100 });
+        const match = page.items.find((d) => d.id === created.id) ?? null;
+        if (!match || match.status === "processed" || match.status === "failed") {
+          done = match;
+          break;
+        }
+      }
+      await docs.reload();
+
+      if (!done) {
+        setError("Still processing. Check this document again in a moment.");
+        return;
+      }
+      if (done.status === "failed") {
+        const message =
+          done.processing_error || "This document could not be read. You can add the policy manually.";
+        setError(message);
+        toast.error(message);
+        return;
+      }
+      setReviewDoc(done);
     } catch (err) {
       const message = errorMessage(err, "Could not upload the document.");
       setError(message);
